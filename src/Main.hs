@@ -30,6 +30,7 @@ import DynFlags
 import System.Posix.IO
 import System.IO
 import Control.Concurrent
+import System.Directory
 
 main :: IO ()
 main = withSocketsDo $ do
@@ -60,8 +61,13 @@ main = withSocketsDo $ do
 
    dumps <- createDumpFiles
       [ File "Main.hs"
-         "main :: IO ()\n\
-         \main = putStrLn \"Hey!\""
+         "import A\n\
+         \main :: IO ()\n\
+         \main = putStrLn astring"
+      , File "A.hs"
+         "module A where\n\
+         \astring :: String\n\
+         \astring = \"Hey!\""
       ]
 
    -- restore stdError/stdOutput (close pipe write-end)
@@ -107,24 +113,27 @@ createDumpFiles files = do
             -- write module files
             forM_ files $ \file -> do
                -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
+               putStrLn ("Writing file: " ++ (tmpdir </> fileName file))
                writeFile (tmpdir </> fileName file) (fileContents file)
 
-            -- execute ghc
-            runGhc (Just libdir) $ do
-               dflags <- getSessionDynFlags
-               let dflags' = dflags
-                     { verbosity = 5
-                     , dumpDir = Just tmpdir
-                     } `gopt_set` Opt_DumpToFile
-               void $ setSessionDynFlags dflags'
-               target <- guessTarget (tmpdir </> fileName x) Nothing
-               setTargets [target]
-               void $ load LoadAllTargets
+            withCurrentDirectory tmpdir $ do
+               -- execute ghc
+               putStrLn ("Executing GHC")
+               runGhc (Just libdir) $ do
+                  dflags <- getSessionDynFlags
+                  let dflags' = dflags
+                        { verbosity = 5
+                        , dumpDir = Just tmpdir
+                        } `gopt_set` Opt_DumpToFile
+                  void $ setSessionDynFlags dflags'
+                  target <- guessTarget (fileName x) Nothing
+                  setTargets [target]
+                  void $ load LoadAllTargets
 
-               -- read generated files
-               df <- getSessionDynFlags 
-               gd <- liftIO $ readIORef (generatedDumps df)
-               forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
+                  -- read generated files
+                  df <- getSessionDynFlags
+                  gd <- liftIO $ readIORef (generatedDumps df)
+                  forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
 
 
 
