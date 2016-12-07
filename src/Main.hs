@@ -5,23 +5,19 @@ import CmdLine (Options(..), getOptions)
 import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
-import Network.HTTP.Base (urlEncode)
-import Numeric
 import Happstack.Server
-import Data.Char (toUpper)
-import Data.Maybe
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
 import Data.IORef
 import Data.Foldable
 import Control.Monad.IO.Class
-import qualified Data.List as List
-import qualified Data.Map  as Map
 import qualified Data.Set  as Set
-import qualified Data.Vector as V
 
 import Text.Highlighting.Kate
+import Text.Megaparsec.String (Parser)
+import Text.Megaparsec
 import Text.Blaze.Html5 ((!), toHtml, docTypeHtml, Html, toValue)
 import qualified Text.Blaze.Html5.Attributes as A
 import qualified Text.Blaze.Html5 as H
@@ -67,11 +63,11 @@ createDumpFiles files = do
    case files of
       []     -> return []
       (x:_) -> do
-         withSystemTempDirectory "ghc-web" $ \tmpDir -> do
+         withSystemTempDirectory "ghc-web" $ \tmpdir -> do
             -- write module files
-            forM files $ \file -> do
+            forM_ files $ \file -> do
                -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
-               writeFile (tmpDir </> fileName file) (fileContents file)
+               writeFile (tmpdir </> fileName file) (fileContents file)
 
             defaultErrorHandler defaultFatalMessager defaultFlushOut $ do
                -- execute ghc
@@ -79,12 +75,12 @@ createDumpFiles files = do
                   dflags <- getSessionDynFlags
                   let dflags' = dflags
                         { verbosity = 5
-                        , dumpDir = Just tmpDir
+                        , dumpDir = Just tmpdir
                         } `gopt_set` Opt_DumpToFile
-                  setSessionDynFlags dflags'
-                  target <- guessTarget (tmpDir </> fileName x) Nothing
+                  void $ setSessionDynFlags dflags'
+                  target <- guessTarget (tmpdir </> fileName x) Nothing
                   setTargets [target]
-                  load LoadAllTargets
+                  void $ load LoadAllTargets
 
                   -- read generated files
                   df <- getSessionDynFlags 
@@ -120,7 +116,68 @@ showWelcome dumps = do
 
 showFile :: File -> Html
 showFile file = do
-   H.h3 (toHtml (fileName file))
+   H.h3 (toHtml (takeFileName (fileName file)))
+   forM_ (parseBlocks file) showBlock
+
+showBlock :: Block -> Html
+showBlock block = do
+   H.h4 (toHtml (blockName block))
+   H.div (toHtml (blockDate block))
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
-      $ highlightAs "nasm" (fileContents file)
+      $ highlightAs (selectFormat (blockFile block) (blockName block)) (blockContents block)
+
+-- | Select highlighting format
+selectFormat :: FilePath -> String -> String
+selectFormat pth name
+   | ".dump-asm"     `isPrefixOf ` ext = "nasm"
+   | ".dump-cmm"     `isPrefixOf ` ext = "c"
+   | ".dump-opt-cmm" `isPrefixOf ` ext = "c"
+   | ".dump-ds"      `isPrefixOf ` ext = "haskell"
+   | ".dump-occur"   `isPrefixOf ` ext = "haskell"
+   | ".dump-parsed"  `isPrefixOf ` ext = "haskell"
+   | ".dump-simpl"   `isPrefixOf ` ext = "haskell"
+   | ".dump-foreign" `isPrefixOf ` ext = if "header file" `isSuffixOf` name
+                                             then "c"
+                                             else "haskell"
+   | otherwise                         = ""
+   where
+      ext = takeExtension pth
+   
+   
+
+
+data Block = Block
+   { blockFile     :: String
+   , blockName     :: String
+   , blockDate     :: String -- UTCTime
+   , blockContents :: String
+   }
+
+parseBlocks :: File -> [Block]
+parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
+      Right x -> x
+      Left e  -> error (show e)
+   where
+      blockMark = do
+         void eol
+         void $ count 20 (char '=')
+
+      blockHead = do
+         blockMark
+         void $ char ' '
+         name <- init <$> manyTill anyChar (char '=')
+         void $ count 19 (char '=')
+         void eol
+         date <- manyTill anyChar eol
+         void eol
+         return (name,date)
+
+      block = do
+         (name,date) <- blockHead
+         contents <- manyTill anyChar (try (lookAhead blockMark) <|> eof)
+         return (Block (fileName file) name date contents)
+
+      blocks :: Parser [Block]
+      blocks = many block
+
