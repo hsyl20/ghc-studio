@@ -6,7 +6,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf)
+import Data.List (isPrefixOf, isSuffixOf, sortOn)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -49,6 +49,10 @@ main = withSocketsDo $ do
 
         -- Show welcome screen
       , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome dumps)
+
+        -- sorted blocks by date
+      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks dumps)
+
       ]
 
 
@@ -69,23 +73,22 @@ createDumpFiles files = do
                -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
                writeFile (tmpdir </> fileName file) (fileContents file)
 
-            defaultErrorHandler defaultFatalMessager defaultFlushOut $ do
-               -- execute ghc
-               runGhc (Just libdir) $ do
-                  dflags <- getSessionDynFlags
-                  let dflags' = dflags
-                        { verbosity = 5
-                        , dumpDir = Just tmpdir
-                        } `gopt_set` Opt_DumpToFile
-                  void $ setSessionDynFlags dflags'
-                  target <- guessTarget (tmpdir </> fileName x) Nothing
-                  setTargets [target]
-                  void $ load LoadAllTargets
+            -- execute ghc
+            runGhc (Just libdir) $ do
+               dflags <- getSessionDynFlags
+               let dflags' = dflags
+                     { verbosity = 5
+                     , dumpDir = Just tmpdir
+                     } `gopt_set` Opt_DumpToFile
+               void $ setSessionDynFlags dflags'
+               target <- guessTarget (tmpdir </> fileName x) Nothing
+               setTargets [target]
+               void $ load LoadAllTargets
 
-                  -- read generated files
-                  df <- getSessionDynFlags 
-                  gd <- liftIO $ readIORef (generatedDumps df)
-                  forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
+               -- read generated files
+               df <- getSessionDynFlags 
+               gd <- liftIO $ readIORef (generatedDumps df)
+               forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
 
 
 
@@ -119,6 +122,14 @@ showFile file = do
    H.h3 (toHtml (takeFileName (fileName file)))
    forM_ (parseBlocks file) showBlock
 
+showSortedBlocks :: [File] -> Html
+showSortedBlocks dumps = do
+   H.h2 (toHtml "GHC Web")
+   let blocks = [ b | file <- dumps
+                    , b    <- parseBlocks file
+                    ]
+   forM_ (sortOn blockDate blocks) showBlock
+
 showBlock :: Block -> Html
 showBlock block = do
    H.h4 (toHtml (blockName block))
@@ -136,6 +147,8 @@ selectFormat pth name
    | ".dump-ds"      `isPrefixOf ` ext = "haskell"
    | ".dump-occur"   `isPrefixOf ` ext = "haskell"
    | ".dump-parsed"  `isPrefixOf ` ext = "haskell"
+   | ".dump-prep"    `isPrefixOf ` ext = "haskell"
+   | ".dump-stg"     `isPrefixOf ` ext = "haskell"
    | ".dump-simpl"   `isPrefixOf ` ext = "haskell"
    | ".dump-foreign" `isPrefixOf ` ext = if "header file" `isSuffixOf` name
                                              then "c"
