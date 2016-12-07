@@ -27,11 +27,36 @@ import qualified Data.ByteString.Lazy as L
 import GHC
 import GHC.Paths ( libdir )
 import DynFlags
+import System.Posix.IO
+import System.IO
+import Control.Concurrent
 
 main :: IO ()
 main = withSocketsDo $ do
 
    opts <- getOptions
+
+   putStrLn "Compiling..."
+
+   -- GHC writes to stdout/stderr. We capture this. 
+   nstdout <- dup stdOutput
+   nstderr <- dup stdError
+   (pipeOutputRead,pipeOutputWrite) <- createPipe
+   (pipeErrorRead,pipeErrorWrite)   <- createPipe
+   _ <- dupTo pipeOutputWrite stdOutput
+   _ <- dupTo pipeErrorWrite stdError
+   closeFd pipeOutputWrite
+   closeFd pipeErrorWrite
+
+   outputLogV <- newEmptyMVar
+   errorLogV  <- newEmptyMVar
+
+   let
+      -- strict hGetContents
+      hGetContents' h  = hGetContents h >>= \s -> length s `seq` return s
+
+   _ <- forkIO (fdToHandle pipeOutputRead >>= hGetContents' >>= putMVar outputLogV)
+   _ <- forkIO (fdToHandle pipeErrorRead  >>= hGetContents' >>= putMVar errorLogV)
 
    dumps <- createDumpFiles
       [ File "Main.hs"
@@ -39,8 +64,19 @@ main = withSocketsDo $ do
          \main = putStrLn \"Hey!\""
       ]
 
-   let conf = nullConf {port = optport opts}
+   -- restore stdError/stdOutput (close pipe write-end)
+   _ <- dupTo nstdout stdOutput
+   _ <- dupTo nstderr stdError
+   closeFd nstderr
+   closeFd nstdout
 
+   -- wait for the threads
+   outputLog <- File "stdout" <$> takeMVar outputLogV
+   errorLog  <- File "stderr" <$> takeMVar errorLogV
+
+   let files = outputLog : errorLog : dumps
+
+   let conf = nullConf {port = optport opts}
    putStrLn (printf "Starting Web server at localhost:%d" (port conf))
    simpleHTTP conf $ msum
       [ 
@@ -48,10 +84,10 @@ main = withSocketsDo $ do
         dir "css" $ dir "style.css" $ ok css
 
         -- Show welcome screen
-      , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome dumps)
+      , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome files)
 
         -- sorted blocks by date
-      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks dumps)
+      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks files)
 
       ]
 
@@ -120,7 +156,10 @@ showWelcome dumps = do
 showFile :: File -> Html
 showFile file = do
    H.h3 (toHtml (takeFileName (fileName file)))
-   forM_ (parseBlocks file) showBlock
+   case fileName file of
+      "stdout" -> H.pre (toHtml (fileContents file))
+      "stderr" -> H.pre (toHtml (fileContents file))
+      _        -> forM_ (parseBlocks file) showBlock
 
 showSortedBlocks :: [File] -> Html
 showSortedBlocks dumps = do

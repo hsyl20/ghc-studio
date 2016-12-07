@@ -36,6 +36,7 @@ executable ghc-web
       ,  temporary               >= 1.2
       ,  filepath                >= 1.4
       ,  highlighting-kate       >= 0.6
+      ,  unix                    >= 2.7
       ,  ghc
       ,  ghc-paths
   hs-source-dirs:      src
