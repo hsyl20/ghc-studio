@@ -31,6 +31,7 @@ import System.Posix.IO
 import System.IO
 import Control.Concurrent
 import System.Directory
+import Data.Time.Clock
 
 main :: IO ()
 main = withSocketsDo $ do
@@ -181,7 +182,7 @@ showSortedBlocks dumps = do
 showBlock :: Block -> Html
 showBlock block = do
    H.h4 (toHtml (blockName block))
-   H.div (toHtml (blockDate block))
+   H.div (toHtml (show (blockDate block)))
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
       $ highlightAs (selectFormat (blockFile block) (blockName block)) (blockContents block)
@@ -211,7 +212,7 @@ selectFormat pth name
 data Block = Block
    { blockFile     :: String
    , blockName     :: String
-   , blockDate     :: String -- UTCTime
+   , blockDate     :: UTCTime
    , blockContents :: String
    }
 
@@ -230,7 +231,7 @@ parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
          name <- init <$> manyTill anyChar (char '=')
          void $ count 19 (char '=')
          void eol
-         date <- manyTill anyChar eol
+         date <- read <$> manyTill anyChar eol
          void eol
          return (name,date)
 

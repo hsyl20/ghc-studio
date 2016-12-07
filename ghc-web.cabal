@@ -38,6 +38,7 @@ executable ghc-web
       ,  highlighting-kate       >= 0.6
       ,  unix                    >= 2.7
       ,  directory               >= 1.2
+      ,  time                    >= 1.6
       ,  ghc
       ,  ghc-paths
   hs-source-dirs:      src
