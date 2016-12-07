@@ -1,4 +1,6 @@
-{-# LANGUAGE LambdaCase, TemplateHaskell #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 import CmdLine (Options(..), getOptions)
 
@@ -6,7 +8,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, partition)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -33,11 +35,58 @@ import Control.Concurrent
 import System.Directory
 import Data.Time.Clock
 
+
+data Compilation = Compilation
+   { compilFlags  :: DynFlags
+   , compilStdErr :: String
+   , compilStdOut :: String
+   , compilDumps  :: [File]
+   }
+
 main :: IO ()
 main = withSocketsDo $ do
 
    opts <- getOptions
 
+   let infiles = 
+         [ File "Main.hs"
+            "import A\n\
+            \main :: IO ()\n\
+            \main = putStrLn astring"
+         , File "A.hs"
+            "module A where\n\
+            \astring :: String\n\
+            \astring = \"Hey!\""
+         ]
+
+   comp <- compileFiles infiles
+
+   let conf = nullConf {port = optport opts}
+   putStrLn (printf "Starting Web server at localhost:%d" (port conf))
+   simpleHTTP conf $ msum
+      [ 
+        -- CSS 
+        dir "css" $ dir "style.css" $ ok css
+
+        -- Show welcome screen
+      , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome infiles [comp])
+
+      , dir "all" $ (ok . toResponse . appTemplate "All results" $ showAll comp)
+
+        -- sorted blocks by date
+      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks comp)
+
+      ]
+
+
+data File = File
+   { fileName     :: String
+   , fileContents :: String
+   } deriving (Show)
+
+
+compileFiles :: [File] -> IO Compilation
+compileFiles files = do
    putStrLn "Compiling..."
 
    -- GHC writes to stdout/stderr. We capture this. 
@@ -60,16 +109,34 @@ main = withSocketsDo $ do
    _ <- forkIO (fdToHandle pipeOutputRead >>= hGetContents' >>= putMVar outputLogV)
    _ <- forkIO (fdToHandle pipeErrorRead  >>= hGetContents' >>= putMVar errorLogV)
 
-   dumps <- createDumpFiles
-      [ File "Main.hs"
-         "import A\n\
-         \main :: IO ()\n\
-         \main = putStrLn astring"
-      , File "A.hs"
-         "module A where\n\
-         \astring :: String\n\
-         \astring = \"Hey!\""
-      ]
+
+   (dflgs,dumps) <- withSystemTempDirectory "ghc-web" $ \tmpdir -> do
+      -- write module files
+      forM_ files $ \file -> do
+         -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
+         putStrLn ("Writing file: " ++ (tmpdir </> fileName file))
+         writeFile (tmpdir </> fileName file) (fileContents file)
+
+      withCurrentDirectory tmpdir $ do
+         -- execute ghc
+         putStrLn ("Executing GHC")
+         runGhc (Just libdir) $ do
+            dflags <- getSessionDynFlags
+            let dflags' = dflags
+                  { verbosity = 5
+                  , dumpDir = Just tmpdir
+                  } `gopt_set` Opt_DumpToFile
+            void $ setSessionDynFlags dflags'
+            target <- guessTarget (fileName (head files)) Nothing
+            setTargets [target]
+            void $ load LoadAllTargets
+
+            -- read generated files
+            df <- getSessionDynFlags
+            gd <- liftIO $ readIORef (generatedDumps df)
+            dups <- forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
+
+            return (dflags',dups)
 
    -- restore stdError/stdOutput (close pipe write-end)
    _ <- dupTo nstdout stdOutput
@@ -78,63 +145,10 @@ main = withSocketsDo $ do
    closeFd nstdout
 
    -- wait for the threads
-   outputLog <- File "stdout" <$> takeMVar outputLogV
-   errorLog  <- File "stderr" <$> takeMVar errorLogV
+   outputLog <- takeMVar outputLogV
+   errorLog  <- takeMVar errorLogV
 
-   let files = outputLog : errorLog : dumps
-
-   let conf = nullConf {port = optport opts}
-   putStrLn (printf "Starting Web server at localhost:%d" (port conf))
-   simpleHTTP conf $ msum
-      [ 
-        -- CSS 
-        dir "css" $ dir "style.css" $ ok css
-
-        -- Show welcome screen
-      , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome files)
-
-        -- sorted blocks by date
-      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks files)
-
-      ]
-
-
-data File = File
-   { fileName     :: String
-   , fileContents :: String
-   } deriving (Show)
-
--- | Compile Haskell files and return dump files
-createDumpFiles :: [File] -> IO [File]
-createDumpFiles files = do
-   case files of
-      []     -> return []
-      (x:_) -> do
-         withSystemTempDirectory "ghc-web" $ \tmpdir -> do
-            -- write module files
-            forM_ files $ \file -> do
-               -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
-               putStrLn ("Writing file: " ++ (tmpdir </> fileName file))
-               writeFile (tmpdir </> fileName file) (fileContents file)
-
-            withCurrentDirectory tmpdir $ do
-               -- execute ghc
-               putStrLn ("Executing GHC")
-               runGhc (Just libdir) $ do
-                  dflags <- getSessionDynFlags
-                  let dflags' = dflags
-                        { verbosity = 5
-                        , dumpDir = Just tmpdir
-                        } `gopt_set` Opt_DumpToFile
-                  void $ setSessionDynFlags dflags'
-                  target <- guessTarget (fileName x) Nothing
-                  setTargets [target]
-                  void $ load LoadAllTargets
-
-                  -- read generated files
-                  df <- getSessionDynFlags
-                  gd <- liftIO $ readIORef (generatedDumps df)
-                  forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
+   return $ Compilation dflgs errorLog outputLog dumps
 
 
 
@@ -158,10 +172,64 @@ appTemplate title bdy = docTypeHtml $ do
       bdy
 
 -- | Welcoming screen
-showWelcome :: [File] -> Html
-showWelcome dumps = do
-   H.h2 (toHtml "GHC Web")
-   traverse_ showFile dumps
+showWelcome :: [File] -> [Compilation] -> Html
+showWelcome files comps = do
+   H.p (toHtml "This is a GHC Web frontend. It will help you debug your program and/or GHC.")
+   H.p (toHtml "The following files are considered:")
+   H.ul $ forM_ files $ \file -> do
+      H.li (toHtml (fileName file))
+      H.div $ toHtml
+         $ formatHtmlBlock defaultFormatOpts
+         $ highlightAs "haskell" (fileContents file)
+   H.p (toHtml "Now you can compile your files with the options you want:")
+   forM_ comps $ \comp -> do
+      showDynFlags (compilFlags comp)
+      H.a (toHtml "All results") ! A.href (toValue "all")
+      H.br
+      H.a (toHtml "Sorted blocks") ! A.href (toValue "sorted")
+
+showAll :: Compilation -> Html
+showAll comp = do
+   showDynFlags (compilFlags comp)
+   showFile (File "stdout" (compilStdOut comp))
+   showFile (File "stderr" (compilStdErr comp))
+   traverse_ showFile (compilDumps comp)
+
+showDynFlags :: DynFlags -> Html
+showDynFlags dflags = do
+   let (active,unactive) = partition (\x -> gopt x dflags) (enumFrom (toEnum 0))
+
+   H.table $ H.tr $ do
+      H.td $ do
+         H.label (toHtml "Active flags:")
+         H.br
+         H.select (forM_ active $ \opt -> H.option $ toHtml $ show opt)
+                  ! A.size (toValue "8")
+
+      H.td $ do
+         H.label (toHtml "Unactive flags:")
+         H.br
+         H.select (forM_ unactive $ \opt -> H.option $ toHtml $ show opt)
+                  ! A.size (toValue "8")
+
+      H.td $ do
+         H.label (toHtml "Verbosity level: ")
+         H.select $ forM_ [0..5] (\(v :: Int) -> 
+            H.option (toHtml (show v))
+               ! (if v == verbosity dflags
+                  then A.selected (toValue "selected")
+                  else mempty)
+            ) ! A.disabled (toValue "disabled")
+
+         H.br
+         H.label (toHtml "Optimization level: ")
+         H.select $ forM_ [0..2] (\(v :: Int) -> 
+            H.option (toHtml (show v))
+               ! (if v == optLevel dflags
+                  then A.selected (toValue "selected")
+                  else mempty)
+            ) ! A.disabled (toValue "disabled")
+
 
 showFile :: File -> Html
 showFile file = do
@@ -171,8 +239,9 @@ showFile file = do
       "stderr" -> H.pre (toHtml (fileContents file))
       _        -> forM_ (parseBlocks file) showBlock
 
-showSortedBlocks :: [File] -> Html
-showSortedBlocks dumps = do
+showSortedBlocks :: Compilation -> Html
+showSortedBlocks comp = do
+   let dumps = compilDumps comp
    H.h2 (toHtml "GHC Web")
    let blocks = [ b | file <- dumps
                     , b    <- parseBlocks file
