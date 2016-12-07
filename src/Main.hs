@@ -14,12 +14,14 @@ import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
 import Data.IORef
+import Data.Foldable
 import Control.Monad.IO.Class
 import qualified Data.List as List
 import qualified Data.Map  as Map
 import qualified Data.Set  as Set
 import qualified Data.Vector as V
 
+import Text.Highlighting.Kate
 import Text.Blaze.Html5 ((!), toHtml, docTypeHtml, Html, toValue)
 import qualified Text.Blaze.Html5.Attributes as A
 import qualified Text.Blaze.Html5 as H
@@ -104,6 +106,7 @@ appTemplate title bdy = docTypeHtml $ do
       H.link ! A.rel       (toValue "stylesheet") 
              ! A.type_     (toValue "text/css")
              ! A.href      (toValue "/css/style.css")
+      H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
    H.body $ do
       H.div (toHtml $ "GHC Web " ++ " / " ++ title)
          ! A.class_ (toValue "headtitle")
@@ -113,4 +116,11 @@ appTemplate title bdy = docTypeHtml $ do
 showWelcome :: [File] -> Html
 showWelcome dumps = do
    H.h2 (toHtml "GHC Web")
-   H.div (toHtml (show dumps))
+   traverse_ showFile dumps
+
+showFile :: File -> Html
+showFile file = do
+   H.h3 (toHtml (fileName file))
+   H.div $ toHtml
+      $ formatHtmlBlock defaultFormatOpts
+      $ highlightAs "nasm" (fileContents file)
