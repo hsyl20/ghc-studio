@@ -497,6 +497,12 @@ data PhaseStat = PhaseStat
    , phaseMemory :: Float
    } deriving (Show)
 
+data PhaseSize = PhaseSize
+   { phaseSizeName      :: String
+   , phaseSizeTerms     :: Word
+   , phaseSizeTypes     :: Word
+   , phaseSizeCoercions :: Word
+   }
 
 showStats :: Compilation -> Html
 showStats comp = do
@@ -518,8 +524,26 @@ showStats comp = do
             H.td $ toHtml (show (sum (phaseMemory <$> phaseStats)))
             ) ! A.style (toValue "border-top: 1px gray solid")
          ) ! A.class_ (toValue "phaseTable")
+
+      H.table (do
+         H.tr $ do
+            H.th (toHtml "Phase")
+            H.th (toHtml "Terms")
+            H.th (toHtml "Types")
+            H.th (toHtml "Coercions")
+         forM_ phaseSizes $ \s -> H.tr $ do
+            H.td $ toHtml (phaseSizeName s)
+            H.td $ toHtml (show (phaseSizeTerms s))
+            H.td $ toHtml (show (phaseSizeTypes s))
+            H.td $ toHtml (show (phaseSizeCoercions s))
+         ) ! A.class_ (toValue "phaseTable")
    where
       phaseStats = catMaybes [ parseMaybe (try parsePhaseEnd <|> parsePhaseEnd') msg
+                             | l <- compilLogs comp
+                             , let msg = showSDoc (logDynFlags l) (logMessage l)
+                             ] 
+
+      phaseSizes = catMaybes [ parseMaybe (parsePhaseSize) msg
                              | l <- compilLogs comp
                              , let msg = showSDoc (logDynFlags l) (logMessage l)
                              ] 
@@ -546,6 +570,18 @@ showStats comp = do
          mem   <- read <$> manyTill anyChar (char ' ')
          void (string "megabytes")
          return $ PhaseStat phase "-" dur mem
+
+      parsePhaseSize :: Parser PhaseSize
+      parsePhaseSize = do
+         void (string "Result size of ")
+         phase <- manyTill anyChar (string "= {")
+         void (string "terms: ")
+         terms <- read <$> manyTill anyChar (char ',')
+         void (string " types: ")
+         typs <- read <$> manyTill anyChar (char ',')
+         void (string " coercions: ")
+         coes <- read <$> manyTill anyChar (char '}')
+         return $ PhaseSize phase terms typs coes
 
 showFile :: Maybe String -> File -> Html
 showFile fileFilter file = do
