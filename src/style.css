@@ -27,3 +27,13 @@ h1 {
    font-style:italic;
    margin-top: -1em;
 }
+
+.panel {
+   width: 100%;
+   text-align:right;
+}
+
+a {
+   color: #0000D0;
+   text-decoration: none;
+}

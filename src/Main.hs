@@ -97,14 +97,17 @@ main = withSocketsDo $ do
    comps <- newTVarIO Map.empty
    profs <- newTVarIO defaultProfiles
 
+   quit <- newEmptyMVar
+
    let conf = nullConf {port = optport opts}
    putStrLn (printf "Starting Web server at localhost:%d" (port conf))
-   simpleHTTP conf $ msum
-      [ 
-        -- CSS 
-        dir "css" $ dir "style.css" $ ok css
+   httpTID <- forkIO $ simpleHTTP conf $ msum
+      [ dir "css" $ dir "style.css" $ ok css
 
-        -- Show welcome screen
+      , dir "quit" $ nullDir >> do
+         liftIO $ putMVar quit ()
+         tempRedirect "/" (toResponse "")
+
       , nullDir >> do
          ps <- liftIO $ atomically $ readTVar profs
          ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
@@ -129,6 +132,10 @@ main = withSocketsDo $ do
                      , dir "sorted" $ ok $ toResponse $ appTemplate (title ++ " / date sorted dump blocks") $ showSortedBlocks c
                      ]
       ]
+
+   takeMVar quit
+   killThread httpTID
+   putStrLn "Quit."
 
 
 data File = File
@@ -220,6 +227,11 @@ appTemplate title bdy = docTypeHtml $ do
    H.body $ do
       H.div (toHtml $ "GHC Web " ++ " / " ++ title)
          ! A.class_ (toValue "headtitle")
+      H.div (do
+         H.a (toHtml ("Home")) ! A.href (toValue "/")
+         toHtml "  -  "
+         H.a (toHtml ("Quit")) ! A.href (toValue "/quit")
+         ) ! A.class_ (toValue "panel")
       bdy
 
 -- | Welcoming screen
@@ -240,10 +252,12 @@ showWelcome files profs = do
 
 showCompilation :: Int -> Compilation -> Html
 showCompilation i comp = do
+   H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
-   H.a (toHtml "All results") ! A.href (toValue ("/compilation/"++show i++"/all"))
+   H.h1 (toHtml "Analyse")
+   H.a (toHtml "All logs") ! A.href (toValue ("/compilation/"++show i++"/all"))
    H.br
-   H.a (toHtml "Sorted blocks") ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
+   H.a (toHtml "Splitted logs sorted by date") ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
 
 showAll :: Compilation -> Html
 showAll comp = do
