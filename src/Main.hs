@@ -32,8 +32,10 @@ import DynFlags
 import System.Posix.IO
 import System.IO
 import Control.Concurrent
+import Control.Concurrent.STM
 import System.Directory
 import Data.Time.Clock
+import Safe
 
 
 data Compilation = Compilation
@@ -59,7 +61,7 @@ main = withSocketsDo $ do
             \astring = \"Hey!\""
          ]
 
-   comp <- compileFiles infiles
+   comps <- newTVarIO []
 
    let conf = nullConf {port = optport opts}
    putStrLn (printf "Starting Web server at localhost:%d" (port conf))
@@ -69,13 +71,28 @@ main = withSocketsDo $ do
         dir "css" $ dir "style.css" $ ok css
 
         -- Show welcome screen
-      , nullDir >> (ok . toResponse . appTemplate "Welcome" $ showWelcome infiles [comp])
+      , nullDir >> do
+         cs <- liftIO $ atomically $ readTVar comps
+         ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles cs
 
-      , dir "all" $ (ok . toResponse . appTemplate "All results" $ showAll comp)
+      , dir "compile" $ do
+         comp <- liftIO $ compileFiles infiles
+         cs <- liftIO $ atomically $ do
+                  modifyTVar comps (++[comp])
+                  readTVar comps
+         tempRedirect ("compilation/"++show (length cs -1)) (toResponse "Temporary redirect")
+         --ok $ toResponse $ appTemplate "All results" $ showAll comp
 
-        -- sorted blocks by date
-      , dir "sorted" $ (ok . toResponse . appTemplate "Sorted blocks" $ showSortedBlocks comp)
-
+      , dir "compilation" $ path $ \i -> do
+         cs <- liftIO $ readTVarIO comps
+         let title = "Compilation "++show i
+         case cs `atMay` i of
+            Nothing -> mempty
+            Just c  -> msum
+               [ nullDir >> (ok $ toResponse $ appTemplate title $ showCompilation i c)
+               , dir "all"    $ ok $ toResponse $ appTemplate (title ++ "/ all dumps") $ showAll c
+               , dir "sorted" $ ok $ toResponse $ appTemplate (title ++ "/ date sorted dump blocks") $ showSortedBlocks c
+               ]
       ]
 
 
@@ -182,11 +199,18 @@ showWelcome files comps = do
          $ formatHtmlBlock defaultFormatOpts
          $ highlightAs "haskell" (fileContents file)
    H.p (toHtml "Now you can compile your files with the options you want:")
-   forM_ comps $ \comp -> do
-      showDynFlags (compilFlags comp)
-      H.a (toHtml "All results") ! A.href (toValue "all")
+   H.a (toHtml "Compile with -v5") ! A.href (toValue "compile")
+   H.br
+   forM_ [0.. length comps-1] $ \i -> do
+      H.a (toHtml ("Compilation " ++show i)) ! A.href (toValue ("compilation/"++show i))
       H.br
-      H.a (toHtml "Sorted blocks") ! A.href (toValue "sorted")
+
+showCompilation :: Int -> Compilation -> Html
+showCompilation i comp = do
+   showDynFlags (compilFlags comp)
+   H.a (toHtml "All results") ! A.href (toValue (show i++"/all"))
+   H.br
+   H.a (toHtml "Sorted blocks") ! A.href (toValue (show i ++"/sorted"))
 
 showAll :: Compilation -> Html
 showAll comp = do

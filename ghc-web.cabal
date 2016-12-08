@@ -39,6 +39,8 @@ executable ghc-web
       ,  unix                    >= 2.7
       ,  directory               >= 1.2
       ,  time                    >= 1.6
+      ,  stm                     >= 2.4
+      ,  safe                    >= 0.3
       ,  ghc
       ,  ghc-paths
   hs-source-dirs:      src
