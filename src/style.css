@@ -38,6 +38,19 @@ a {
    text-decoration: none;
 }
 
+.phaseTable {
+   text-align:center;
+   border: solid 1px gray;
+   border-collapse:collapse;
+   margin: auto;
+}
+
+.phaseTable th {
+   border: solid 1px gray;
+   padding-left: 0.4em;
+   padding-right: 0.4em;
+}
+
 .fileTable {
    text-align:center;
    border: solid 1px gray;

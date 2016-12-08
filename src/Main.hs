@@ -10,7 +10,7 @@ import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
 import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl')
-import Data.Maybe (fromJust, isJust)
+import Data.Maybe (fromJust, isJust, catMaybes)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -30,7 +30,7 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as L
 
 import GHC
-import Outputable (SDoc,PprStyle,renderWithStyle)
+import Outputable (SDoc,PprStyle,renderWithStyle,showSDoc)
 import GHC.Paths ( libdir )
 import FastString (unpackFS)
 import DynFlags
@@ -312,6 +312,10 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
+   showStats comp
+   H.br
+   H.br
+
    let tdr x = H.td x ! A.style (toValue "border-right:1px gray solid")
    H.table (do
       H.tr $ do
@@ -485,6 +489,63 @@ showDynFlags dflags = do
                   ) ! A.disabled (toValue "disabled")
       ) ! A.class_ (toValue "dynflags")
 
+
+data PhaseStat = PhaseStat
+   { phaseName :: String
+   , phaseModule :: String
+   , phaseDuration :: Float
+   , phaseMemory :: Float
+   } deriving (Show)
+
+
+showStats :: Compilation -> Html
+showStats comp = do
+      H.table (do
+         H.tr $ do
+            H.th (toHtml "Phase")
+            H.th (toHtml "Module")
+            H.th (toHtml "Duration (ms)")
+            H.th (toHtml "Memory (MB)")
+         forM_ phaseStats $ \s -> H.tr $ do
+            H.td $ toHtml (phaseName s)
+            H.td $ toHtml (phaseModule s)
+            H.td $ toHtml (show (phaseDuration s))
+            H.td $ toHtml (show (phaseMemory s))
+         H.tr (do
+            H.th $ toHtml "Total"
+            H.th $ toHtml "-"
+            H.td $ toHtml (show (sum (phaseDuration <$> phaseStats)))
+            H.td $ toHtml (show (sum (phaseMemory <$> phaseStats)))
+            ) ! A.style (toValue "border-top: 1px gray solid")
+         ) ! A.class_ (toValue "phaseTable")
+   where
+      phaseStats = catMaybes [ parseMaybe (try parsePhaseEnd <|> parsePhaseEnd') msg
+                             | l <- compilLogs comp
+                             , let msg = showSDoc (logDynFlags l) (logMessage l)
+                             ] 
+
+      parsePhaseEnd :: Parser PhaseStat
+      parsePhaseEnd = do
+         void (string "!!! ")
+         phase <- manyTill anyChar (char '[')
+         md    <- manyTill anyChar (char ']')
+         void (string ": finished in ")
+         dur   <- read <$> manyTill anyChar (char ' ')
+         void (string "milliseconds, allocated ")
+         mem   <- read <$> manyTill anyChar (char ' ')
+         void (string "megabytes")
+         return $ PhaseStat phase md dur mem
+
+      parsePhaseEnd' :: Parser PhaseStat
+      parsePhaseEnd' = do
+         void (string "!!! ")
+         phase <- manyTill anyChar (char ':')
+         void (string " finished in ")
+         dur   <- read <$> manyTill anyChar (char ' ')
+         void (string "milliseconds, allocated ")
+         mem   <- read <$> manyTill anyChar (char ' ')
+         void (string "megabytes")
+         return $ PhaseStat phase "-" dur mem
 
 showFile :: Maybe String -> File -> Html
 showFile fileFilter file = do
