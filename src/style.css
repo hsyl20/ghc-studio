@@ -7,8 +7,8 @@ body {
 .headtitle {
    border: solid 1px #404040;
    border-radius: 5px;
-   box-shadow: 10px 10px 5px #888888;
-   text-align:left;
+   box-shadow: 7px 7px 5px #888888;
+   text-align:center;
    padding-left: 5px;
    font-size:2em;
    color: #D0D0D0;
@@ -22,32 +22,8 @@ h1 {
    text-align:center;    
 }
 
-#buffer_alloc_size {
-   width: 6em;
+.date {
+   font-size: 0.6em;
+   font-style:italic;
+   margin-top: -1em;
 }
-
-.buffer_release_form {
-   display:inline;
-}
-
-.insn_table {
-   border: 0px;
-   border-collapse: collapse;
-}
-
-.insn_table td, th{
-   border: 1px solid black;
-   text-align: center;
-}
-
-.opcode_map {
-   border: 1px solid black;
-   border-collapse: collapse;
-}
-
-.opcode_map td, th{
-   border: 1px solid black;
-   text-align: center;
-   min-width: 5em;
-}
-

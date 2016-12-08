@@ -8,7 +8,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn, partition)
+import Data.List (isPrefixOf, isSuffixOf, sortOn)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -190,45 +190,60 @@ showWelcome files comps = do
 
 showAll :: Compilation -> Html
 showAll comp = do
-   showDynFlags (compilFlags comp)
    showFile (File "stdout" (compilStdOut comp))
    showFile (File "stderr" (compilStdErr comp))
    traverse_ showFile (compilDumps comp)
 
 showDynFlags :: DynFlags -> Html
 showDynFlags dflags = do
-   let (active,unactive) = partition (\x -> gopt x dflags) (enumFrom (toEnum 0))
+   let showFlagEnum :: (Show a, Enum a) => String -> (a -> Bool) -> Html
+       showFlagEnum lbl test = do
+         H.td $ do
+            H.label (toHtml lbl)
+            H.br
+            H.select (forM_ (enumFrom (toEnum 0)) $ \opt ->
+               H.option (toHtml $ show opt)
+                     ! (if not (test opt)
+                           then A.style (toValue "color:red")
+                           else mempty)
+                     ! A.value (toValue (show (fromEnum opt)))
+               ) ! (A.size (toValue "12"))
+
 
    H.table $ H.tr $ do
-      H.td $ do
-         H.label (toHtml "Active flags:")
-         H.br
-         H.select (forM_ active $ \opt -> H.option $ toHtml $ show opt)
-                  ! A.size (toValue "8")
+      showFlagEnum "General flags:" (`gopt` dflags)
+      showFlagEnum "Dump flags:" (`dopt` dflags)
+      showFlagEnum "Warning flags:" (`wopt` dflags)
+      showFlagEnum "Extensions:" (`xopt` dflags)
 
-      H.td $ do
-         H.label (toHtml "Unactive flags:")
-         H.br
-         H.select (forM_ unactive $ \opt -> H.option $ toHtml $ show opt)
-                  ! A.size (toValue "8")
+      H.tr $ H.td $ do
+         H.table $ do
+            H.tr $ do
+               H.td $ H.label (toHtml "Verbosity level: ")
+               H.td $ H.select (forM_ [0..5] $ \(v :: Int) -> 
+                  H.option (toHtml (show v))
+                     ! (if v == verbosity dflags
+                        then A.selected (toValue "selected")
+                        else mempty)
+                  ) ! A.disabled (toValue "disabled")
 
-      H.td $ do
-         H.label (toHtml "Verbosity level: ")
-         H.select $ forM_ [0..5] (\(v :: Int) -> 
-            H.option (toHtml (show v))
-               ! (if v == verbosity dflags
-                  then A.selected (toValue "selected")
-                  else mempty)
-            ) ! A.disabled (toValue "disabled")
+            H.tr $ do
+               H.td $ H.label (toHtml "Optimization level: ")
+               H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
+                  H.option (toHtml (show v))
+                     ! (if v == optLevel dflags
+                        then A.selected (toValue "selected")
+                        else mempty)
+                  ) ! A.disabled (toValue "disabled")
 
-         H.br
-         H.label (toHtml "Optimization level: ")
-         H.select $ forM_ [0..2] (\(v :: Int) -> 
-            H.option (toHtml (show v))
-               ! (if v == optLevel dflags
-                  then A.selected (toValue "selected")
-                  else mempty)
-            ) ! A.disabled (toValue "disabled")
+            H.tr $ do
+               H.td $ H.label (toHtml "Debug level: ")
+               H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
+                  H.option (toHtml (show v))
+                     ! (if v == debugLevel dflags
+                        then A.selected (toValue "selected")
+                        else mempty)
+                  ) ! A.disabled (toValue "disabled")
 
 
 showFile :: File -> Html
@@ -241,8 +256,7 @@ showFile file = do
 
 showSortedBlocks :: Compilation -> Html
 showSortedBlocks comp = do
-   let dumps = compilDumps comp
-   H.h2 (toHtml "GHC Web")
+   let dumps  = compilDumps comp
    let blocks = [ b | file <- dumps
                     , b    <- parseBlocks file
                     ]
@@ -251,7 +265,7 @@ showSortedBlocks comp = do
 showBlock :: Block -> Html
 showBlock block = do
    H.h4 (toHtml (blockName block))
-   H.div (toHtml (show (blockDate block)))
+   H.div (toHtml (show (blockDate block))) ! A.class_ (toValue "date")
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
       $ highlightAs (selectFormat (blockFile block) (blockName block)) (blockContents block)
