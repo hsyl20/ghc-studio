@@ -8,7 +8,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl')
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -28,8 +28,9 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as L
 
 import GHC
-import Outputable (SDoc,PprStyle,showSDoc)
+import Outputable (SDoc,PprStyle,renderWithStyle)
 import GHC.Paths ( libdir )
+import FastString (unpackFS)
 import DynFlags
 import System.Posix.IO
 import System.IO
@@ -68,17 +69,19 @@ defaultProfiles :: [CompilationProfile]
 defaultProfiles =
    [ CompilationProfile
       { profileName  = "Maximal verbosity"
-      , profileDesc  = "Use maximal verbosity (-v5): the intermediate representation after each compilation phase is dumped"
-      , profileFlags = \dflags -> dflags
+      , profileDesc  = "Use maximal verbosity (-v5) and -Wall: the intermediate representation after each compilation phase is dumped"
+      , profileFlags = \dflags -> enableGroup "all" $ dflags
          { verbosity = 5
          }
       }
    , CompilationProfile
       { profileName  = "Maximal verbosity and optimization"
-      , profileDesc  = "Use maximal verbosity (-v5) and maximal optimization (-O2)"
-      , profileFlags = \dflags -> updOptLevel 2 $ dflags
-         { verbosity = 5
-         }
+      , profileDesc  = "Use maximal verbosity (-v5), -Wall and maximal optimization (-O2)"
+      , profileFlags = \dflags ->
+           updOptLevel 2
+         $ enableGroup "all" $ dflags
+            { verbosity = 5
+            }
       }
    , CompilationProfile
       { profileName  = "Debug TypeChecker"
@@ -142,10 +145,12 @@ main = withSocketsDo $ do
                   Just c  -> msum
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
-                     , dir "all"    $ ok $ toResponse $ appTemplate title $
+                     , dir "dumps_all"    $ ok $ toResponse $ appTemplate title $
                         showAll fileFilter c
-                     , dir "sorted" $ ok $ toResponse $ appTemplate title $
+                     , dir "dumps_sorted" $ ok $ toResponse $ appTemplate title $
                         showSortedBlocks fileFilter c
+                     , dir "logs" $ ok $ toResponse $ appTemplate title $
+                        showLogs fileFilter c
                      ]
       ]
 
@@ -288,25 +293,76 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
-   toHtml "Splitted logs sorted by date"
+   toHtml "Splitted dumps sorted by date"
    H.ul $ do
       forM_ (compilSources comp) $ \f -> H.li $ do
          H.a (toHtml (toHtml (fileName f)))
-            ! A.href (toValue ("/compilation/"++show i++"/sorted?file="++fileName f))
+            ! A.href (toValue ("/compilation/"++show i++"/dumps_sorted?file="++fileName f))
       H.li $ H.a (toHtml "All files")
-         ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
+         ! A.href (toValue ("/compilation/"++show i ++"/dumps_sorted"))
 
-   toHtml "Raw logs"
+   toHtml "Raw dumps"
    H.ul $ do
       forM_ (compilSources comp) $ \f -> H.li $ do
          H.a (toHtml (toHtml (fileName f)))
-            ! A.href (toValue ("/compilation/"++show i++"/all?file="++fileName f))
+            ! A.href (toValue ("/compilation/"++show i++"/dumps_all?file="++fileName f))
       H.li $ H.a (toHtml "All files")
-         ! A.href (toValue ("/compilation/"++show i++"/all"))
+         ! A.href (toValue ("/compilation/"++show i++"/dumps_all"))
 
    toHtml "Logs"
-   H.ul $ forM_ (compilLogs comp) $ \clog -> do
-      H.li $ toHtml (showSDoc (logDynFlags clog) (logMessage clog))
+   H.ul $ do
+      forM_ (compilSources comp) $ \f -> H.li $ do
+         H.a (toHtml (toHtml (fileName f)))
+            ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
+      H.li $ H.a (toHtml "All files")
+         ! A.href (toValue ("/compilation/"++show i++"/logs"))
+
+showLogs :: Maybe String -> Compilation -> Html
+showLogs fileFilter comp = do
+   H.table (do
+      H.tr $ do
+         H.th (toHtml "Severity")
+         H.th (toHtml "Reason")
+         H.th (toHtml "Location")
+         H.th (toHtml "Message")
+      forM_ (compilLogs comp) $ \clog -> do
+         let
+            prepareFile s
+               | "./" `isPrefixOf` s = drop 2 s
+               | otherwise           = s
+            bypass = case fileFilter of
+               Nothing -> False
+               Just f  -> case logLocation clog of
+                  RealSrcSpan s -> prepareFile (unpackFS (srcSpanFile s)) /= f
+                  -- TODO: don't bypass log lines that concern the module but
+                  -- that don't have location info
+                  --    (e.g. "!!! Parser [A]: finished in...")
+                  _             -> True
+      
+         unless bypass $ H.tr $ do
+            H.td $ toHtml $ case logSeverity clog of
+               SevOutput      -> "Output"
+               SevFatal       -> "Fatal"
+               SevInteractive -> "Interactive"
+               SevDump        -> "Dump"
+               SevInfo        -> "Info"
+               SevWarning     -> "Warning"
+               SevError       -> "Error"
+            H.td (toHtml $ case logReason clog of
+               NoReason    -> "None"
+               Reason flag -> getWarningFlagName flag)
+               ! A.style (toValue ("width: 12em"))
+            H.td (toHtml $ case logLocation clog of
+               UnhelpfulSpan s -> unpackFS s
+               RealSrcSpan s   -> unpackFS (srcSpanFile s)
+                                    ++ " (" ++ show (srcSpanStartLine s)
+                                    ++ "," ++ show (srcSpanStartCol  s)
+                                    ++ ") -> (" ++ show (srcSpanEndLine s)
+                                    ++ "," ++ show (srcSpanEndCol  s) ++ ")")
+               ! A.style (toValue ("width: 12em"))
+            H.td $ toHtml $
+               renderWithStyle (logDynFlags clog) (logMessage clog) (logStyle clog)
+         ) ! A.class_ (toValue "logtable")
 
 
 showAll :: Maybe String -> Compilation -> Html
@@ -315,23 +371,25 @@ showAll fileFilter comp = do
    showFile fileFilter (File "stderr" (compilStdErr comp))
    traverse_ (showFile fileFilter) (compilDumps comp)
 
+getFlagName :: (Show a, Enum a) => Maybe [FlagSpec a] -> a -> String
+getFlagName specs opt = case specs of
+      Nothing -> show opt
+      Just ss -> case filter ((== fromEnum opt) . fromEnum . flagSpecFlag) ss of
+         []    -> show opt
+         (x:_) -> flagSpecName x
+
+getWarningFlagName :: WarningFlag -> String
+getWarningFlagName = getFlagName (Just wWarningFlags)
+
 showDynFlags :: DynFlags -> Html
 showDynFlags dflags = do
    let showFlagEnum :: (Show a, Enum a) => String -> Maybe [FlagSpec a] -> (a -> Bool) -> Html
        showFlagEnum lbl specs test = do
-         let getOptName opt = case specs of
-               Nothing -> show opt
-               Just ss -> case filter ((== fromEnum opt) . fromEnum . flagSpecFlag) ss of
-                  []    -> show opt
-                  (x:_) -> flagSpecName x
-
-
-
          H.td $ do
             H.label (toHtml lbl)
             H.br
-            H.select (forM_ (sortOn getOptName (enumFrom (toEnum 0))) $ \opt -> do
-               let name = getOptName opt
+            H.select (forM_ (sortOn (getFlagName specs) (enumFrom (toEnum 0))) $ \opt -> do
+               let name = getFlagName specs opt
                H.option (toHtml name)
                      ! (if not (test opt)
                            then A.style (toValue "color:red")
@@ -392,9 +450,11 @@ showFile fileFilter file = do
 showSortedBlocks :: Maybe String -> Compilation -> Html
 showSortedBlocks fileFilter comp = do
    let dumps  = compilDumps comp
-       ff     = fmap dropExtension fileFilter
+       ff x   = case fileFilter of
+         Nothing -> True
+         Just f  -> dropExtension (fileName x) == dropExtension f
    let blocks = [ b | file <- dumps
-                    , Just (dropExtension (fileName file)) == ff
+                    , ff file
                     , b    <- parseBlocks file
                     ]
    forM_ (sortOn blockDate blocks) showBlock
@@ -479,3 +539,105 @@ parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
       blocks :: Parser [Block]
       blocks = many block
 
+
+enableGroup :: String -> DynFlags -> DynFlags
+enableGroup groupName dflags = case Map.lookup groupName groups of
+      Nothing   -> error $ "Invalid warning flag group: " ++ show groupName
+                     ++ ". Expecting one of: " ++ show (Map.keys groups)
+      Just flgs -> foldl' wopt_set dflags flgs
+   where
+      groups = Map.fromList warningGroups
+
+
+----------------------------------------------
+-- TODO: remove these once GHC exports them
+
+
+warningGroups :: [(String, [WarningFlag])]
+warningGroups =
+    [ ("compat",       minusWcompatOpts)
+    , ("unused-binds", unusedBindsFlags)
+    , ("default",      standardWarnings)
+    , ("extra",        minusWOpts)
+    , ("all",          minusWallOpts)
+    , ("everything",   minusWeverythingOpts)
+    ]
+
+
+-- | Warnings enabled unless specified otherwise
+standardWarnings :: [WarningFlag]
+standardWarnings -- see Note [Documenting warning flags]
+    = [ Opt_WarnOverlappingPatterns,
+        Opt_WarnWarningsDeprecations,
+        Opt_WarnDeprecatedFlags,
+        Opt_WarnDeferredTypeErrors,
+        Opt_WarnTypedHoles,
+        Opt_WarnPartialTypeSignatures,
+        Opt_WarnUnrecognisedPragmas,
+        Opt_WarnDuplicateExports,
+        Opt_WarnOverflowedLiterals,
+        Opt_WarnEmptyEnumerations,
+        Opt_WarnMissingFields,
+        Opt_WarnMissingMethods,
+        Opt_WarnWrongDoBind,
+        Opt_WarnUnsupportedCallingConventions,
+        Opt_WarnDodgyForeignImports,
+        Opt_WarnInlineRuleShadowing,
+        Opt_WarnAlternativeLayoutRuleTransitional,
+        Opt_WarnUnsupportedLlvmVersion,
+        Opt_WarnTabs,
+        Opt_WarnUnrecognisedWarningFlags
+      ]
+
+-- | Things you get with -W
+minusWOpts :: [WarningFlag]
+minusWOpts
+    = standardWarnings ++
+      [ Opt_WarnUnusedTopBinds,
+        Opt_WarnUnusedLocalBinds,
+        Opt_WarnUnusedPatternBinds,
+        Opt_WarnUnusedMatches,
+        Opt_WarnUnusedForalls,
+        Opt_WarnUnusedImports,
+        Opt_WarnIncompletePatterns,
+        Opt_WarnDodgyExports,
+        Opt_WarnDodgyImports
+      ]
+
+-- | Things you get with -Wall
+minusWallOpts :: [WarningFlag]
+minusWallOpts
+    = minusWOpts ++
+      [ Opt_WarnTypeDefaults,
+        Opt_WarnNameShadowing,
+        Opt_WarnMissingSignatures,
+        Opt_WarnHiShadows,
+        Opt_WarnOrphans,
+        Opt_WarnUnusedDoBind,
+        Opt_WarnTrustworthySafe,
+        Opt_WarnUntickedPromotedConstructors,
+        Opt_WarnMissingPatternSynonymSignatures
+      ]
+
+-- | Things you get with -Weverything, i.e. *all* known warnings flags
+minusWeverythingOpts :: [WarningFlag]
+minusWeverythingOpts = [ toEnum 0 .. ]
+
+-- | Things you get with -Wcompat.
+--
+-- This is intended to group together warnings that will be enabled by default
+-- at some point in the future, so that library authors eager to make their
+-- code future compatible to fix issues before they even generate warnings.
+minusWcompatOpts :: [WarningFlag]
+minusWcompatOpts
+    = [ Opt_WarnMissingMonadFailInstances
+      , Opt_WarnSemigroup
+      , Opt_WarnNonCanonicalMonoidInstances
+      ]
+
+-- Things you get with -Wunused-binds
+unusedBindsFlags :: [WarningFlag]
+unusedBindsFlags = [ Opt_WarnUnusedTopBinds
+                   , Opt_WarnUnusedLocalBinds
+                   , Opt_WarnUnusedPatternBinds
+                   ]

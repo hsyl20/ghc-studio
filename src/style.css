@@ -37,3 +37,8 @@ a {
    color: #0000D0;
    text-decoration: none;
 }
+
+.logtable {
+   text-align:center;
+   border: solid 1px gray;
+}
