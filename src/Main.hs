@@ -9,15 +9,13 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl')
-import Data.Maybe (fromJust, isJust, catMaybes)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl',isInfixOf)
+import Data.Maybe (fromJust, isJust, fromMaybe)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
 import Data.IORef
-import Data.Foldable
 import Control.Monad.IO.Class
-import qualified Data.Set  as Set
 import qualified Data.Map  as Map
 
 import Text.Highlighting.Kate as Kate
@@ -48,9 +46,7 @@ data Compilation = Compilation
    { compilFlags   :: DynFlags
    , compilSources :: [File]
    , compilLogs    :: [Log]
-   , compilStdErr  :: String
-   , compilStdOut  :: String
-   , compilDumps   :: [File]
+   , compilPhases  :: [PhaseInfo]
    }
 
 data CompilationProfile = CompilationProfile
@@ -163,10 +159,11 @@ main = withSocketsDo $ do
                   Just c  -> msum
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
-                     , dir "dumps_all"    $ ok $ toResponse $ appTemplate title $
-                        showAll fileFilter c
-                     , dir "dumps_sorted" $ ok $ toResponse $ appTemplate title $
-                        showSortedBlocks fileFilter c
+                     , dir "phase" $ path $ \phaseIdx -> do
+                        case compilPhases c `atMay` phaseIdx of
+                           Nothing    -> mempty
+                           Just phase -> ok $ toResponse $ appTemplate title $
+                                          showPhase c phase
                      , dir "logs" $ ok $ toResponse $ appTemplate title $
                         showLogs fileFilter c
                      ]
@@ -210,7 +207,7 @@ compileFiles files prof = do
 
    logs <- newIORef []
 
-   (dflgs,dumps) <- withSystemTempDirectory "ghc-web" $ \tmpdir -> do
+   dflgs <- withSystemTempDirectory "ghc-web" $ \tmpdir -> do
       -- write module files
       forM_ files $ \file -> do
          -- FIXME: check that fileName is not relative (e.g., ../../etc/passwd)
@@ -232,24 +229,13 @@ compileFiles files prof = do
             let dflags' = (profileFlags prof dflags)
                   { dumpDir    = Just tmpdir
                   , log_action = logact
-                  } `gopt_set` Opt_DumpToFile
+                  }
             void $ setSessionDynFlags dflags'
             target <- guessTarget (fileName (head files)) Nothing
             setTargets [target]
             void $ load LoadAllTargets
 
-            -- read generated files
-            df <- getSessionDynFlags
-            gd <- liftIO $ readIORef (generatedDumps df)
-            dups <- forM (Set.toList gd) $ \p -> do
-               -- strip "$tmpdir/./" from the path
-               let p' = case drop (length tmpdir) p of
-                           x | "/./" `isPrefixOf` x -> drop 3 x
-                             | "/" `isPrefixOf` x   -> drop 1 x
-                             | otherwise            -> x
-               File p' <$> liftIO (readFile p)
-
-            return (dflags',dups)
+            return dflags'
 
    -- restore stdError/stdOutput (close pipe write-end)
    _ <- dupTo nstdout stdOutput
@@ -263,7 +249,9 @@ compileFiles files prof = do
 
    logs' <- reverse <$> readIORef logs
 
-   return $ Compilation dflgs files logs' errorLog outputLog dumps
+   let phaseInfos = makePhaseInfos logs'
+
+   return $ Compilation dflgs files logs' phaseInfos
 
 
 
@@ -312,32 +300,17 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
-   showStats comp
-   H.br
+   showPhases i comp
    H.br
 
-   let tdr x = H.td x ! A.style (toValue "border-right:1px gray solid")
-   H.table (do
-      H.tr $ do
-         H.th $ toHtml "Splitted dumps sorted by date"
-         H.th $ toHtml "Raw dumps"
-         H.th $ toHtml "Logs"
-      forM_ (compilSources comp) $ \f -> H.tr $ do
-         tdr $ H.a (toHtml (toHtml (fileName f)))
-            ! A.href (toValue ("/compilation/"++show i++"/dumps_sorted?file="++fileName f))
-         tdr $ H.a (toHtml (toHtml (fileName f)))
-            ! A.href (toValue ("/compilation/"++show i++"/dumps_all?file="++fileName f))
-         tdr $ H.a (toHtml (toHtml (fileName f)))
-            ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
-      H.tr (do
-         tdr $ H.a (toHtml "All files")
-            ! A.href (toValue ("/compilation/"++show i ++"/dumps_sorted"))
-         tdr $ H.a (toHtml "All files")
-            ! A.href (toValue ("/compilation/"++show i++"/dumps_all"))
-         tdr $ H.a (toHtml "All the logs")
+   H.div
+      (H.a (toHtml "View full log")
             ! A.href (toValue ("/compilation/"++show i++"/logs"))
-         ) ! A.style (toValue "border-top: 1px gray solid")
-      ) ! A.class_ (toValue "fileTable")
+      ) ! A.style (toValue "margin:auto; text-align:center")
+
+   H.table $ forM_ (compilSources comp) $ \f -> H.tr $ do
+      H.td $ H.a (toHtml (toHtml (fileName f)))
+         ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
 
 
 showLogs :: Maybe String -> Compilation -> Html
@@ -419,12 +392,6 @@ showLogTable logs = do
          ) ! A.class_ (toValue "logtable")
 
 
-showAll :: Maybe String -> Compilation -> Html
-showAll fileFilter comp = do
-   showFile fileFilter (File "stdout" (compilStdOut comp))
-   showFile fileFilter (File "stderr" (compilStdErr comp))
-   traverse_ (showFile fileFilter) (compilDumps comp)
-
 getFlagName :: (Show a, Enum a) => Maybe [FlagSpec a] -> a -> String
 getFlagName specs opt = case specs of
       Nothing -> show opt
@@ -490,11 +457,14 @@ showDynFlags dflags = do
       ) ! A.class_ (toValue "dynflags")
 
 
+data PhaseBegin = PhaseBegin
+   { phaseBeginName   :: String
+   , phaseBeginModule :: Maybe String
+   } deriving (Show)
+
 data PhaseStat = PhaseStat
-   { phaseName :: String
-   , phaseModule :: String
-   , phaseDuration :: Float
-   , phaseMemory :: Float
+   { phaseStatDuration :: Float
+   , phaseStatMemory   :: Float
    } deriving (Show)
 
 data PhaseSize = PhaseSize
@@ -502,74 +472,134 @@ data PhaseSize = PhaseSize
    , phaseSizeTerms     :: Word
    , phaseSizeTypes     :: Word
    , phaseSizeCoercions :: Word
+   } deriving (Show)
+
+data PhaseLog
+   = PhaseRawLog Log
+   | PhaseSizeLog PhaseSize
+   | PhaseDumpLog [Block]
+
+data PhaseInfo = PhaseInfo
+   { phaseName        :: String
+   , phaseModule      :: Maybe String
+   , phaseDuration    :: Float
+   , phaseMemory      :: Float
+   , phaseLog         :: [PhaseLog]
    }
 
-showStats :: Compilation -> Html
-showStats comp = do
-      H.table (do
-         H.tr $ do
-            H.th (toHtml "Phase")
-            H.th (toHtml "Module")
-            H.th (toHtml "Duration (ms)")
-            H.th (toHtml "Memory (MB)")
-         forM_ phaseStats $ \s -> H.tr $ do
-            H.td $ toHtml (phaseName s)
-            H.td $ toHtml (phaseModule s)
-            H.td $ toHtml (show (phaseDuration s))
-            H.td $ toHtml (show (phaseMemory s))
-         H.tr (do
-            H.th $ toHtml "Total"
-            H.th $ toHtml "-"
-            H.td $ toHtml (show (sum (phaseDuration <$> phaseStats)))
-            H.td $ toHtml (show (sum (phaseMemory <$> phaseStats)))
-            ) ! A.style (toValue "border-top: 1px gray solid")
-         ) ! A.class_ (toValue "phaseTable")
+showPhase :: Compilation -> PhaseInfo -> Html
+showPhase _ phase = do
+   H.h2 $ toHtml ("Phase: " ++ phaseName phase)
+   forM_ (phaseLog phase) $ \case
+      PhaseRawLog l   -> showLogTable [l]
+      PhaseSizeLog s  ->
+         H.table (do
+            H.tr $ do
+               H.th (toHtml "Result name")
+               H.th (toHtml "Terms")
+               H.th (toHtml "Types")
+               H.th (toHtml "Coercions")
+               H.td $ toHtml (phaseSizeName s)
+               H.td $ toHtml (show (phaseSizeTerms s))
+               H.td $ toHtml (show (phaseSizeTypes s))
+               H.td $ toHtml (show (phaseSizeCoercions s))
+            ) ! A.class_ (toValue "phaseTable")
+      PhaseDumpLog bs -> forM_ bs showBlock
 
-      H.table (do
-         H.tr $ do
-            H.th (toHtml "Phase")
-            H.th (toHtml "Terms")
-            H.th (toHtml "Types")
-            H.th (toHtml "Coercions")
-         forM_ phaseSizes $ \s -> H.tr $ do
-            H.td $ toHtml (phaseSizeName s)
-            H.td $ toHtml (show (phaseSizeTerms s))
-            H.td $ toHtml (show (phaseSizeTypes s))
-            H.td $ toHtml (show (phaseSizeCoercions s))
-         ) ! A.class_ (toValue "phaseTable")
+
+showPhases :: Int -> Compilation -> Html
+showPhases compIdx comp = do
+   let phases = compilPhases comp
+   H.table (do
+      H.tr $ do
+         H.th (toHtml "Phase")
+         H.th (toHtml "Module")
+         H.th (toHtml "Duration (ms)")
+         H.th (toHtml "Memory (MB)")
+      forM_ (phases `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
+         H.td $ H.a (toHtml (phaseName s))
+            ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
+         H.td $ toHtml (fromMaybe "-" (phaseModule s))
+         H.td $ toHtml (show (phaseDuration s))
+         H.td $ toHtml (show (phaseMemory s))
+      H.tr (do
+         H.th $ toHtml "Total"
+         H.th $ toHtml "-"
+         H.td $ toHtml (show (sum (phaseDuration <$> phases)))
+         H.td $ toHtml (show (sum (phaseMemory <$> phases)))
+         ) ! A.style (toValue "border-top: 1px gray solid")
+      ) ! A.class_ (toValue "phaseTable")
+
+makePhaseInfos :: [Log] -> [PhaseInfo]
+makePhaseInfos = go Nothing
    where
-      phaseStats = catMaybes [ parseMaybe (try parsePhaseEnd <|> parsePhaseEnd') msg
-                             | l <- compilLogs comp
-                             , let msg = showSDoc (logDynFlags l) (logMessage l)
-                             ] 
+      go :: Maybe PhaseInfo -> [Log] -> [PhaseInfo]
+      go (Just c) [] = [reverseLog c]
+      go Nothing  [] = []
+      go c    (x:ls) =
+         let l = logMessage' x in
+         case parseMaybe parsePhaseBegin l of
+            Just b  -> let c' = PhaseInfo
+                                 { phaseName     = phaseBeginName b
+                                 , phaseModule   = phaseBeginModule b
+                                 , phaseDuration = 0
+                                 , phaseMemory   = 0
+                                 , phaseLog      = []
+                                 }
+                       in case c of
+                        Just d  -> reverseLog d:go (Just c') ls
+                        Nothing -> go (Just c') ls
+            Nothing -> case parseMaybe parsePhaseSize l of
+               Just ps -> go (appendLog (PhaseSizeLog ps) c) ls
+               Nothing -> case parseMaybe parsePhaseStat l of
+                  Just ps -> let ~(Just c') = c
+                                 c'' = c'
+                                    { phaseDuration = phaseStatDuration ps
+                                    , phaseMemory   = phaseStatMemory ps
+                                    }
+                             in c'' : go Nothing ls
+                  Nothing -> case logSeverity x of
+                     SevDump -> go (appendLog (PhaseDumpLog (parseBlock "" l)) c) ls
+                     _       -> go (appendLog (PhaseRawLog x) c) ls
+                        
 
-      phaseSizes = catMaybes [ parseMaybe (parsePhaseSize) msg
-                             | l <- compilLogs comp
-                             , let msg = showSDoc (logDynFlags l) (logMessage l)
-                             ] 
+      reverseLog :: PhaseInfo -> PhaseInfo
+      reverseLog phi = phi { phaseLog = reverse (phaseLog phi)}
 
-      parsePhaseEnd :: Parser PhaseStat
-      parsePhaseEnd = do
+      appendLog :: PhaseLog -> Maybe PhaseInfo -> Maybe PhaseInfo
+      appendLog l (Just phi) = Just $ phi { phaseLog = l:phaseLog phi }
+      appendLog _ Nothing    = Nothing
+
+      logMessage' l = showSDoc (logDynFlags l) (logMessage l)
+
+      parsePhaseName :: Parser (String,Maybe String)
+      parsePhaseName = 
+         (try $ do
+            phase <- manyTill anyChar (string " [")
+            md    <- manyTill anyChar (char ']')
+            void (char ':')
+            return (phase, Just md)
+         ) <|> (do
+            phase <- manyTill anyChar (char ':')
+            return (phase, Nothing)
+         )
+
+      parsePhaseBegin :: Parser PhaseBegin
+      parsePhaseBegin = do
+         void (string "*** ")
+         (phase,md) <- parsePhaseName
+         return $ PhaseBegin phase md
+
+      parsePhaseStat :: Parser PhaseStat
+      parsePhaseStat = do
          void (string "!!! ")
-         phase <- manyTill anyChar (char '[')
-         md    <- manyTill anyChar (char ']')
-         void (string ": finished in ")
-         dur   <- read <$> manyTill anyChar (char ' ')
-         void (string "milliseconds, allocated ")
-         mem   <- read <$> manyTill anyChar (char ' ')
-         void (string "megabytes")
-         return $ PhaseStat phase md dur mem
-
-      parsePhaseEnd' :: Parser PhaseStat
-      parsePhaseEnd' = do
-         void (string "!!! ")
-         phase <- manyTill anyChar (char ':')
+         void $ parsePhaseName
          void (string " finished in ")
          dur   <- read <$> manyTill anyChar (char ' ')
          void (string "milliseconds, allocated ")
          mem   <- read <$> manyTill anyChar (char ' ')
          void (string "megabytes")
-         return $ PhaseStat phase "-" dur mem
+         return $ PhaseStat dur mem
 
       parsePhaseSize :: Parser PhaseSize
       parsePhaseSize = do
@@ -582,31 +612,6 @@ showStats comp = do
          void (string " coercions: ")
          coes <- read <$> manyTill anyChar (char '}')
          return $ PhaseSize phase terms typs coes
-
-showFile :: Maybe String -> File -> Html
-showFile fileFilter file = do
-   let bypass = case fileFilter of
-         Nothing -> False
-         Just f  -> dropExtension f /= dropExtension (fileName file)
-
-   unless bypass $ do
-      H.h3 (toHtml (fileName file))
-      case fileName file of
-         "stdout" -> H.pre (toHtml (fileContents file))
-         "stderr" -> H.pre (toHtml (fileContents file))
-         _        -> forM_ (parseBlocks file) showBlock
-
-showSortedBlocks :: Maybe String -> Compilation -> Html
-showSortedBlocks fileFilter comp = do
-   let dumps  = compilDumps comp
-       ff x   = case fileFilter of
-         Nothing -> True
-         Just f  -> dropExtension (fileName x) == dropExtension f
-   let blocks = [ b | file <- dumps
-                    , ff file
-                    , b    <- parseBlocks file
-                    ]
-   forM_ (sortOn blockDate blocks) showBlock
 
 showBlock :: Block -> Html
 showBlock block = do
@@ -622,24 +627,36 @@ showBlock block = do
 -- | Select highlighting format
 selectFormat :: FilePath -> String -> String
 selectFormat pth name
-   | ".dump-asm"            `isPrefixOf ` ext = "nasm"
-   | ".dump-cmm"            `isPrefixOf ` ext = "c"
-   | ".dump-opt-cmm"        `isPrefixOf ` ext = "c"
-   | ".dump-ds"             `isPrefixOf ` ext = "haskell"
-   | ".dump-occur"          `isPrefixOf ` ext = "haskell"
-   | ".dump-stranal"        `isPrefixOf ` ext = "haskell"
-   | ".dump-spec"           `isPrefixOf ` ext = "haskell"
-   | ".dump-cse"            `isPrefixOf ` ext = "haskell"
-   | ".dump-call-arity"     `isPrefixOf ` ext = "haskell"
-   | ".dump-worker-wrapper" `isPrefixOf ` ext = "haskell"
-   | ".dump-parsed"         `isPrefixOf ` ext = "haskell"
-   | ".dump-prep"           `isPrefixOf ` ext = "haskell"
-   | ".dump-stg"            `isPrefixOf ` ext = "haskell"
-   | ".dump-simpl"          `isPrefixOf ` ext = "haskell"
-   | ".dump-foreign"        `isPrefixOf ` ext = if "header file" `isSuffixOf` name
-                                                   then "c"
-                                                   else "haskell"
-   | otherwise                               = ""
+   | "Asm code"             `isInfixOf` name   = "nasm"
+   | "Synthetic instructions expanded" == name = "nasm"
+   | "Registers allocated"             == name = "nasm"
+   | "Liveness annotations added"      == name = "nasm"
+   | "Native code"                     == name = "nasm"
+   | "Sink assignments"                == name = "c"
+   | "Layout Stack"                    == name = "c"
+   | "Post switch plan"                == name = "c"
+   | "Post common block elimination"   == name = "c"
+   | "Post control-flow optimisations" == name = "c"
+   | "after setInfoTableStackMap"      == name = "c"
+   | "Cmm"                  `isInfixOf` name   = "c"
+   | ".dump-asm"            `isPrefixOf` ext   = "nasm"
+   | ".dump-cmm"            `isPrefixOf` ext   = "c"
+   | ".dump-opt-cmm"        `isPrefixOf` ext   = "c"
+   | ".dump-ds"             `isPrefixOf` ext   = "haskell"
+   | ".dump-occur"          `isPrefixOf` ext   = "haskell"
+   | ".dump-stranal"        `isPrefixOf` ext   = "haskell"
+   | ".dump-spec"           `isPrefixOf` ext   = "haskell"
+   | ".dump-cse"            `isPrefixOf` ext   = "haskell"
+   | ".dump-call-arity"     `isPrefixOf` ext   = "haskell"
+   | ".dump-worker-wrapper" `isPrefixOf` ext   = "haskell"
+   | ".dump-parsed"         `isPrefixOf` ext   = "haskell"
+   | ".dump-prep"           `isPrefixOf` ext   = "haskell"
+   | ".dump-stg"            `isPrefixOf` ext   = "haskell"
+   | ".dump-simpl"          `isPrefixOf` ext   = "haskell"
+   | ".dump-foreign"        `isPrefixOf` ext   = if "header file" `isSuffixOf` name
+                                                     then "c"
+                                                     else "haskell"
+   | otherwise                                 = ""
    where
       ext = takeExtension pth
    
@@ -653,12 +670,12 @@ data Block = Block
    , blockContents :: String
    }
 
-parseBlocks :: File -> [Block]
-parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
+parseBlock :: String -> String -> [Block]
+parseBlock name contents = case runParser blocks name contents of
       Right x -> x
-      Left e  -> [Block (fileName file) "Whole file"
+      Left e  -> [Block name "Whole file"
                   Nothing
-                  (fileContents file ++ "\n\n==== Parse error ====\n" ++ show e)]
+                  (contents ++ "\n\n==== Parse error ====\n" ++ show e)]
    where
       blockMark = do
          void eol
@@ -667,10 +684,10 @@ parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
       blockHead = do
          blockMark
          void $ char ' '
-         name <- init <$> manyTill anyChar (char '=')
+         bname <- init <$> manyTill anyChar (char '=')
          void $ count 19 (char '=')
          void eol
-         dateStr <- lookAhead (manyTill anyChar eol)
+         dateStr <- lookAhead (manyTill anyChar (eol <|> (eof >> return "")))
          -- date isn't always present (e.g., typechecker dumps)
          date <- if "UTC" `isSuffixOf` dateStr
             then do
@@ -678,12 +695,12 @@ parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
                void eol
                return (Just (read dateStr))
             else return Nothing
-         return (name,date)
+         return (bname,date)
 
       block = do
-         (name,date) <- blockHead
-         contents <- manyTill anyChar (try (lookAhead blockMark) <|> eof)
-         return (Block (fileName file) name date contents)
+         (bname,date) <- blockHead
+         bcontents <- manyTill anyChar (try (lookAhead blockMark) <|> eof)
+         return (Block name bname date bcontents)
 
       blocks :: Parser [Block]
       blocks = many block
