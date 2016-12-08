@@ -312,29 +312,29 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
-   toHtml "Splitted dumps sorted by date"
-   H.ul $ do
-      forM_ (compilSources comp) $ \f -> H.li $ do
-         H.a (toHtml (toHtml (fileName f)))
+   let tdr x = H.td x ! A.style (toValue "border-right:1px gray solid")
+   H.table (do
+      H.tr $ do
+         H.th $ toHtml "Splitted dumps sorted by date"
+         H.th $ toHtml "Raw dumps"
+         H.th $ toHtml "Logs"
+      forM_ (compilSources comp) $ \f -> H.tr $ do
+         tdr $ H.a (toHtml (toHtml (fileName f)))
             ! A.href (toValue ("/compilation/"++show i++"/dumps_sorted?file="++fileName f))
-      H.li $ H.a (toHtml "All files")
-         ! A.href (toValue ("/compilation/"++show i ++"/dumps_sorted"))
-
-   toHtml "Raw dumps"
-   H.ul $ do
-      forM_ (compilSources comp) $ \f -> H.li $ do
-         H.a (toHtml (toHtml (fileName f)))
+         tdr $ H.a (toHtml (toHtml (fileName f)))
             ! A.href (toValue ("/compilation/"++show i++"/dumps_all?file="++fileName f))
-      H.li $ H.a (toHtml "All files")
-         ! A.href (toValue ("/compilation/"++show i++"/dumps_all"))
-
-   toHtml "Logs"
-   H.ul $ do
-      forM_ (compilSources comp) $ \f -> H.li $ do
-         H.a (toHtml (toHtml (fileName f)))
+         tdr $ H.a (toHtml (toHtml (fileName f)))
             ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
-      H.li $ H.a (toHtml "All the logs")
-         ! A.href (toValue ("/compilation/"++show i++"/logs"))
+      H.tr (do
+         tdr $ H.a (toHtml "All files")
+            ! A.href (toValue ("/compilation/"++show i ++"/dumps_sorted"))
+         tdr $ H.a (toHtml "All files")
+            ! A.href (toValue ("/compilation/"++show i++"/dumps_all"))
+         tdr $ H.a (toHtml "All the logs")
+            ! A.href (toValue ("/compilation/"++show i++"/logs"))
+         ) ! A.style (toValue "border-top: 1px gray solid")
+      ) ! A.class_ (toValue "fileTable")
+
 
 showLogs :: Maybe String -> Compilation -> Html
 showLogs fileFilter comp = do
@@ -448,7 +448,8 @@ showDynFlags dflags = do
                ) ! (A.size (toValue "12"))
 
 
-   H.table $ H.tr $ do
+   
+   H.div (H.table $ H.tr $ do
       showFlagEnum "General flags:" (Just fFlags) (`gopt` dflags)
       showFlagEnum "Dump flags:" Nothing (`dopt` dflags)
       showFlagEnum "Warning flags:" (Just wWarningFlags) (`wopt` dflags)
@@ -482,6 +483,7 @@ showDynFlags dflags = do
                         then A.selected (toValue "selected")
                         else mempty)
                   ) ! A.disabled (toValue "disabled")
+      ) ! A.class_ (toValue "dynflags")
 
 
 showFile :: Maybe String -> File -> Html

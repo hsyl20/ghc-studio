@@ -38,6 +38,19 @@ a {
    text-decoration: none;
 }
 
+.fileTable {
+   text-align:center;
+   border: solid 1px gray;
+   border-collapse:collapse;
+   margin: auto;
+}
+
+.fileTable th {
+   border: solid 1px gray;
+   padding-left: 0.4em;
+   padding-right: 0.4em;
+}
+
 .logtable {
    text-align:center;
    border: solid 1px gray;
@@ -58,4 +71,8 @@ a {
 
 .lineNumbers {
    width:2em;
+}
+
+.dynflags {
+   margin:auto;
 }
