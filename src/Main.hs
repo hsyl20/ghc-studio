@@ -40,10 +40,11 @@ import Safe
 
 
 data Compilation = Compilation
-   { compilFlags  :: DynFlags
-   , compilStdErr :: String
-   , compilStdOut :: String
-   , compilDumps  :: [File]
+   { compilFlags   :: DynFlags
+   , compilSources :: [File]
+   , compilStdErr  :: String
+   , compilStdOut  :: String
+   , compilDumps   :: [File]
    }
 
 data CompilationProfile = CompilationProfile
@@ -124,12 +125,16 @@ main = withSocketsDo $ do
 
                cs' <- liftIO $ readTVarIO comps
                let title = profileName prof
+               fileFilter <- optional $ look "file"
                case Map.lookup i cs' of
                   Nothing -> mempty
                   Just c  -> msum
-                     [ nullDir >> (ok $ toResponse $ appTemplate title $ showCompilation i c)
-                     , dir "all"    $ ok $ toResponse $ appTemplate (title ++ " / all dumps") $ showAll c
-                     , dir "sorted" $ ok $ toResponse $ appTemplate (title ++ " / date sorted dump blocks") $ showSortedBlocks c
+                     [ nullDir >> (ok $ toResponse $ appTemplate title $
+                        showCompilation i c)
+                     , dir "all"    $ ok $ toResponse $ appTemplate title $
+                        showAll fileFilter c
+                     , dir "sorted" $ ok $ toResponse $ appTemplate title $
+                        showSortedBlocks fileFilter c
                      ]
       ]
 
@@ -192,7 +197,13 @@ compileFiles files prof = do
             -- read generated files
             df <- getSessionDynFlags
             gd <- liftIO $ readIORef (generatedDumps df)
-            dups <- forM (Set.toList gd) $ \p -> File p <$> liftIO (readFile p)
+            dups <- forM (Set.toList gd) $ \p -> do
+               -- strip "$tmpdir/./" from the path
+               let p' = case drop (length tmpdir) p of
+                           x | "/./" `isPrefixOf` x -> drop 3 x
+                             | "/" `isPrefixOf` x   -> drop 1 x
+                             | otherwise            -> x
+               File p' <$> liftIO (readFile p)
 
             return (dflags',dups)
 
@@ -206,7 +217,7 @@ compileFiles files prof = do
    outputLog <- takeMVar outputLogV
    errorLog  <- takeMVar errorLogV
 
-   return $ Compilation dflgs errorLog outputLog dumps
+   return $ Compilation dflgs files errorLog outputLog dumps
 
 
 
@@ -255,15 +266,28 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
-   H.a (toHtml "All logs") ! A.href (toValue ("/compilation/"++show i++"/all"))
-   H.br
-   H.a (toHtml "Splitted logs sorted by date") ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
+   toHtml "Splitted logs sorted by date"
+   H.ul $ do
+      forM_ (compilSources comp) $ \f -> H.li $ do
+         H.a (toHtml (toHtml (fileName f)))
+            ! A.href (toValue ("/compilation/"++show i++"/sorted?file="++fileName f))
+      H.li $ H.a (toHtml "All files")
+         ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
 
-showAll :: Compilation -> Html
-showAll comp = do
-   showFile (File "stdout" (compilStdOut comp))
-   showFile (File "stderr" (compilStdErr comp))
-   traverse_ showFile (compilDumps comp)
+   toHtml "Raw logs"
+   H.ul $ do
+      forM_ (compilSources comp) $ \f -> H.li $ do
+         H.a (toHtml (toHtml (fileName f)))
+            ! A.href (toValue ("/compilation/"++show i++"/all?file="++fileName f))
+      H.li $ H.a (toHtml "All files")
+         ! A.href (toValue ("/compilation/"++show i++"/all"))
+
+
+showAll :: Maybe String -> Compilation -> Html
+showAll fileFilter comp = do
+   showFile fileFilter (File "stdout" (compilStdOut comp))
+   showFile fileFilter (File "stderr" (compilStdErr comp))
+   traverse_ (showFile fileFilter) (compilDumps comp)
 
 showDynFlags :: DynFlags -> Html
 showDynFlags dflags = do
@@ -317,18 +341,25 @@ showDynFlags dflags = do
                   ) ! A.disabled (toValue "disabled")
 
 
-showFile :: File -> Html
-showFile file = do
-   H.h3 (toHtml (takeFileName (fileName file)))
-   case fileName file of
-      "stdout" -> H.pre (toHtml (fileContents file))
-      "stderr" -> H.pre (toHtml (fileContents file))
-      _        -> forM_ (parseBlocks file) showBlock
+showFile :: Maybe String -> File -> Html
+showFile fileFilter file = do
+   let bypass = case fileFilter of
+         Nothing -> False
+         Just f  -> dropExtension f /= dropExtension (fileName file)
 
-showSortedBlocks :: Compilation -> Html
-showSortedBlocks comp = do
+   unless bypass $ do
+      H.h3 (toHtml (fileName file))
+      case fileName file of
+         "stdout" -> H.pre (toHtml (fileContents file))
+         "stderr" -> H.pre (toHtml (fileContents file))
+         _        -> forM_ (parseBlocks file) showBlock
+
+showSortedBlocks :: Maybe String -> Compilation -> Html
+showSortedBlocks fileFilter comp = do
    let dumps  = compilDumps comp
+       ff     = fmap dropExtension fileFilter
    let blocks = [ b | file <- dumps
+                    , Just (dropExtension (fileName file)) == ff
                     , b    <- parseBlocks file
                     ]
    forM_ (sortOn blockDate blocks) showBlock
