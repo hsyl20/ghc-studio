@@ -42,3 +42,20 @@ a {
    text-align:center;
    border: solid 1px gray;
 }
+
+.logTableMessage {
+   text-align:left;
+}
+
+.logTableMessage pre {
+   margin: 0px;
+   background-color:transparent;
+}
+
+.err {
+   background-color: rgba(255,0,0,0.2)
+}
+
+.lineNumbers {
+   width:2em;
+}

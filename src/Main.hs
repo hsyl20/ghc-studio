@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 import CmdLine (Options(..), getOptions)
 
@@ -9,6 +10,7 @@ import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
 import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl')
+import Data.Maybe (fromJust, isJust)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -18,7 +20,7 @@ import Control.Monad.IO.Class
 import qualified Data.Set  as Set
 import qualified Data.Map  as Map
 
-import Text.Highlighting.Kate
+import Text.Highlighting.Kate as Kate
 import Text.Megaparsec.String (Parser)
 import Text.Megaparsec
 import Text.Blaze.Html5 ((!), toHtml, docTypeHtml, Html, toValue)
@@ -39,6 +41,7 @@ import Control.Concurrent.STM
 import System.Directory
 import Data.Time.Clock
 import Safe
+import Extra
 
 
 data Compilation = Compilation
@@ -134,9 +137,10 @@ main = withSocketsDo $ do
             \-- astring :: String\n\
             \astring = \"Hey!\""
          , File "Test/B.hs"
-            "module Test.B where\n\
+            "module Test.B (bstring) where\n\
             \-- bstring :: String\n\
-            \bstring = \"Hey!\""
+            \bstring = \"Hey!\"\n\
+            \cstring = \"Hey!\""
          ]
 
    comps <- newTVarIO Map.empty
@@ -345,25 +349,62 @@ showCompilation i comp = do
       forM_ (compilSources comp) $ \f -> H.li $ do
          H.a (toHtml (toHtml (fileName f)))
             ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
-      H.li $ H.a (toHtml "All files")
+      H.li $ H.a (toHtml "All the logs")
          ! A.href (toValue ("/compilation/"++show i++"/logs"))
 
 showLogs :: Maybe String -> Compilation -> Html
 showLogs fileFilter comp = do
+   let
+      logFilter clog = case (fileFilter,logLocation clog) of
+         (Nothing,_)      -> True
+         (Just f, Just s) -> locFile s == f
+         _                -> False
+      logs = filter logFilter (compilLogs comp)
+
+   case fileFilter of
+      Nothing -> showLogTable logs
+      Just f  -> do
+         let
+            ers = sortOn fst
+                     $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
+                     $ groupOn (locEndLine . fromJust . logLocation)
+                     $ filter (isJust . logLocation) logs
+
+            file   = head (filter ((== f) . fileName) (compilSources comp))
+            source = highlightAs "haskell" (fileContents file)
+
+            go _           []  []               = return ()
+            go currentLine src []               = do
+               let opts = defaultFormatOpts
+                     { numberLines = True
+                     , startNumber = currentLine+1
+                     }
+               formatHtmlBlock opts src
+            go currentLine src ((n,errs):errors)
+               | n == currentLine = showLogTable errs >> go (currentLine+1) src errors
+               | otherwise        = do
+                  let (src1,src2) = splitAt (n - currentLine) src
+                  let opts = defaultFormatOpts
+                        { numberLines = True
+                        , startNumber = currentLine+1
+                        }
+                  formatHtmlBlock opts src1
+                  showLogTable errs
+                  go n src2 errors
+
+         H.h2 (toHtml "Source inlined logs:")
+         H.div $ toHtml $ go 0 source ers
+
+showLogTable :: [Log] -> Html
+showLogTable logs = do
    H.table (do
       H.tr $ do
          H.th (toHtml "Severity")
          H.th (toHtml "Reason")
          H.th (toHtml "Location")
          H.th (toHtml "Message")
-      forM_ (compilLogs comp) $ \clog -> do
-         let
-            bypass = case (fileFilter,logLocation clog) of
-               (Nothing,_)      -> False
-               (Just f, Just s) -> locFile s /= f
-               _                -> True
-      
-         unless bypass $ H.tr $ do
+      forM_ logs $ \clog -> do
+         H.tr $ do
             H.td $ toHtml $ case logSeverity clog of
                SevOutput      -> "Output"
                SevFatal       -> "Fatal"
@@ -375,7 +416,7 @@ showLogs fileFilter comp = do
             H.td (toHtml $ case logReason clog of
                NoReason    -> "None"
                Reason flag -> getWarningFlagName flag)
-               ! A.style (toValue ("width: 12em"))
+               ! A.style (toValue ("min-width: 12em"))
             H.td (toHtml $ case logLocation clog of
                Nothing -> "None"
                Just s  -> locFile s
@@ -383,9 +424,10 @@ showLogs fileFilter comp = do
                   ++ "," ++ show (locStartCol  s)
                   ++ ") -> (" ++ show (locEndLine s)
                   ++ "," ++ show (locEndCol  s) ++ ")")
-               ! A.style (toValue ("width: 12em"))
-            H.td $ toHtml $
+               ! A.style (toValue ("min-width: 12em"))
+            H.td (H.pre $ toHtml $
                renderWithStyle (logDynFlags clog) (logMessage clog) (logStyle clog)
+               ) ! A.class_ (toValue "logTableMessage")
          ) ! A.class_ (toValue "logtable")
 
 
