@@ -7,7 +7,8 @@ where
 import Options.Applicative
 
 data Options = Options
-   { optport    :: Int
+   { optport   :: Int
+   , optfiles  :: [String]
    }
 
 options :: Parser Options
@@ -19,6 +20,7 @@ options = Options
      <> value 8000
      <> help "Use port PORT for the HTTP server"
      )
+  <*> some (argument str (metavar "FILES..."))
   
 
 getOptions :: IO Options
@@ -26,5 +28,5 @@ getOptions = execParser opts
   where
     opts = info (helper <*> options)
       ( fullDesc
-     <> progDesc "Show X86 instructions"
-     <> header "ViperVM ASM" )
+     <> progDesc "GHC Web Frontend"
+     <> header "GHC Web Frontend" )

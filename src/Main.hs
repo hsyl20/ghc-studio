@@ -124,24 +124,8 @@ main = withSocketsDo $ do
 
    opts <- getOptions
 
-   let infiles = 
-         [ File "Main.hs"
-            "import A\n\
-            \import Test.B\n\
-            \main :: IO ()\n\
-            \main = do\n\
-            \  putStrLn astring\n\
-            \  putStrLn bstring"
-         , File "A.hs"
-            "module A where\n\
-            \-- astring :: String\n\
-            \astring = \"Hey!\""
-         , File "Test/B.hs"
-            "module Test.B (bstring) where\n\
-            \-- bstring :: String\n\
-            \bstring = \"Hey!\"\n\
-            \cstring = \"Hey!\""
-         ]
+   infiles <- forM (optfiles opts) $ \src ->
+               File src <$> readFile src
 
    comps <- newTVarIO Map.empty
    profs <- newTVarIO defaultProfiles
