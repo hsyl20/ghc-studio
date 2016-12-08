@@ -16,6 +16,7 @@ import Data.IORef
 import Data.Foldable
 import Control.Monad.IO.Class
 import qualified Data.Set  as Set
+import qualified Data.Map  as Map
 
 import Text.Highlighting.Kate
 import Text.Megaparsec.String (Parser)
@@ -45,6 +46,38 @@ data Compilation = Compilation
    , compilDumps  :: [File]
    }
 
+data CompilationProfile = CompilationProfile
+   { profileName  :: String
+   , profileDesc  :: String
+   , profileFlags :: DynFlags -> DynFlags
+   }
+
+defaultProfiles :: [CompilationProfile]
+defaultProfiles =
+   [ CompilationProfile
+      { profileName  = "Maximal verbosity"
+      , profileDesc  = "Use maximal verbosity (-v5): the intermediate representation after each compilation phase is dumped"
+      , profileFlags = \dflags -> dflags
+         { verbosity = 5
+         }
+      }
+   , CompilationProfile
+      { profileName  = "Maximal verbosity and optimization"
+      , profileDesc  = "Use maximal verbosity (-v5) and maximal optimization (-O2)"
+      , profileFlags = \dflags -> updOptLevel 2 $ dflags
+         { verbosity = 5
+         }
+      }
+   , CompilationProfile
+      { profileName  = "Debug TypeChecker"
+      , profileDesc  = "Enable type-checker tracing"
+      , profileFlags = \dflags -> dflags
+         { verbosity = 1
+         } `dopt_set` Opt_D_dump_tc
+           `dopt_set` Opt_D_dump_tc_trace
+      }
+   ]
+
 main :: IO ()
 main = withSocketsDo $ do
 
@@ -61,7 +94,8 @@ main = withSocketsDo $ do
             \astring = \"Hey!\""
          ]
 
-   comps <- newTVarIO []
+   comps <- newTVarIO Map.empty
+   profs <- newTVarIO defaultProfiles
 
    let conf = nullConf {port = optport opts}
    putStrLn (printf "Starting Web server at localhost:%d" (port conf))
@@ -72,27 +106,28 @@ main = withSocketsDo $ do
 
         -- Show welcome screen
       , nullDir >> do
-         cs <- liftIO $ atomically $ readTVar comps
-         ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles cs
-
-      , dir "compile" $ do
-         comp <- liftIO $ compileFiles infiles
-         cs <- liftIO $ atomically $ do
-                  modifyTVar comps (++[comp])
-                  readTVar comps
-         tempRedirect ("compilation/"++show (length cs -1)) (toResponse "Temporary redirect")
-         --ok $ toResponse $ appTemplate "All results" $ showAll comp
+         ps <- liftIO $ atomically $ readTVar profs
+         ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
 
       , dir "compilation" $ path $ \i -> do
-         cs <- liftIO $ readTVarIO comps
-         let title = "Compilation "++show i
-         case cs `atMay` i of
-            Nothing -> mempty
-            Just c  -> msum
-               [ nullDir >> (ok $ toResponse $ appTemplate title $ showCompilation i c)
-               , dir "all"    $ ok $ toResponse $ appTemplate (title ++ "/ all dumps") $ showAll c
-               , dir "sorted" $ ok $ toResponse $ appTemplate (title ++ "/ date sorted dump blocks") $ showSortedBlocks c
-               ]
+         ps <- liftIO $ readTVarIO profs
+         case ps `atMay` i of
+            Nothing   -> mempty
+            Just prof -> do
+               cs <- liftIO $ readTVarIO comps
+               when (Map.notMember i cs) $ do
+                  comp <- liftIO $ compileFiles infiles prof
+                  liftIO $ atomically $ modifyTVar comps (Map.insert i comp)
+
+               cs' <- liftIO $ readTVarIO comps
+               let title = profileName prof
+               case Map.lookup i cs' of
+                  Nothing -> mempty
+                  Just c  -> msum
+                     [ nullDir >> (ok $ toResponse $ appTemplate title $ showCompilation i c)
+                     , dir "all"    $ ok $ toResponse $ appTemplate (title ++ " / all dumps") $ showAll c
+                     , dir "sorted" $ ok $ toResponse $ appTemplate (title ++ " / date sorted dump blocks") $ showSortedBlocks c
+                     ]
       ]
 
 
@@ -102,8 +137,8 @@ data File = File
    } deriving (Show)
 
 
-compileFiles :: [File] -> IO Compilation
-compileFiles files = do
+compileFiles :: [File] -> CompilationProfile -> IO Compilation
+compileFiles files prof = do
    putStrLn "Compiling..."
 
    -- GHC writes to stdout/stderr. We capture this. 
@@ -139,9 +174,8 @@ compileFiles files = do
          putStrLn ("Executing GHC")
          runGhc (Just libdir) $ do
             dflags <- getSessionDynFlags
-            let dflags' = dflags
-                  { verbosity = 5
-                  , dumpDir = Just tmpdir
+            let dflags' = (profileFlags prof dflags)
+                  { dumpDir = Just tmpdir
                   } `gopt_set` Opt_DumpToFile
             void $ setSessionDynFlags dflags'
             target <- guessTarget (fileName (head files)) Nothing
@@ -189,8 +223,8 @@ appTemplate title bdy = docTypeHtml $ do
       bdy
 
 -- | Welcoming screen
-showWelcome :: [File] -> [Compilation] -> Html
-showWelcome files comps = do
+showWelcome :: [File] -> [CompilationProfile] -> Html
+showWelcome files profs = do
    H.p (toHtml "This is a GHC Web frontend. It will help you debug your program and/or GHC.")
    H.p (toHtml "The following files are considered:")
    H.ul $ forM_ files $ \file -> do
@@ -198,19 +232,18 @@ showWelcome files comps = do
       H.div $ toHtml
          $ formatHtmlBlock defaultFormatOpts
          $ highlightAs "haskell" (fileContents file)
-   H.p (toHtml "Now you can compile your files with the options you want:")
-   H.a (toHtml "Compile with -v5") ! A.href (toValue "compile")
-   H.br
-   forM_ [0.. length comps-1] $ \i -> do
-      H.a (toHtml ("Compilation " ++show i)) ! A.href (toValue ("compilation/"++show i))
-      H.br
+   H.p (toHtml "Now you can compile your files with the profile you want:")
+   H.table $ forM_ (profs `zip` [0..]) $ \(prof,(i::Int)) -> do
+      H.tr $ do
+         H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
+         H.td $ toHtml (profileDesc prof)
 
 showCompilation :: Int -> Compilation -> Html
 showCompilation i comp = do
    showDynFlags (compilFlags comp)
-   H.a (toHtml "All results") ! A.href (toValue (show i++"/all"))
+   H.a (toHtml "All results") ! A.href (toValue ("/compilation/"++show i++"/all"))
    H.br
-   H.a (toHtml "Sorted blocks") ! A.href (toValue (show i ++"/sorted"))
+   H.a (toHtml "Sorted blocks") ! A.href (toValue ("/compilation/"++show i ++"/sorted"))
 
 showAll :: Compilation -> Html
 showAll comp = do
@@ -289,7 +322,10 @@ showSortedBlocks comp = do
 showBlock :: Block -> Html
 showBlock block = do
    H.h4 (toHtml (blockName block))
-   H.div (toHtml (show (blockDate block))) ! A.class_ (toValue "date")
+   let dateStr = case blockDate block of
+         Nothing -> "No date"
+         Just x  -> show x
+   H.div (toHtml dateStr) ! A.class_ (toValue "date")
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
       $ highlightAs (selectFormat (blockFile block) (blockName block)) (blockContents block)
@@ -297,19 +333,24 @@ showBlock block = do
 -- | Select highlighting format
 selectFormat :: FilePath -> String -> String
 selectFormat pth name
-   | ".dump-asm"     `isPrefixOf ` ext = "nasm"
-   | ".dump-cmm"     `isPrefixOf ` ext = "c"
-   | ".dump-opt-cmm" `isPrefixOf ` ext = "c"
-   | ".dump-ds"      `isPrefixOf ` ext = "haskell"
-   | ".dump-occur"   `isPrefixOf ` ext = "haskell"
-   | ".dump-parsed"  `isPrefixOf ` ext = "haskell"
-   | ".dump-prep"    `isPrefixOf ` ext = "haskell"
-   | ".dump-stg"     `isPrefixOf ` ext = "haskell"
-   | ".dump-simpl"   `isPrefixOf ` ext = "haskell"
-   | ".dump-foreign" `isPrefixOf ` ext = if "header file" `isSuffixOf` name
-                                             then "c"
-                                             else "haskell"
-   | otherwise                         = ""
+   | ".dump-asm"            `isPrefixOf ` ext = "nasm"
+   | ".dump-cmm"            `isPrefixOf ` ext = "c"
+   | ".dump-opt-cmm"        `isPrefixOf ` ext = "c"
+   | ".dump-ds"             `isPrefixOf ` ext = "haskell"
+   | ".dump-occur"          `isPrefixOf ` ext = "haskell"
+   | ".dump-stranal"        `isPrefixOf ` ext = "haskell"
+   | ".dump-spec"           `isPrefixOf ` ext = "haskell"
+   | ".dump-cse"            `isPrefixOf ` ext = "haskell"
+   | ".dump-call-arity"     `isPrefixOf ` ext = "haskell"
+   | ".dump-worker-wrapper" `isPrefixOf ` ext = "haskell"
+   | ".dump-parsed"         `isPrefixOf ` ext = "haskell"
+   | ".dump-prep"           `isPrefixOf ` ext = "haskell"
+   | ".dump-stg"            `isPrefixOf ` ext = "haskell"
+   | ".dump-simpl"          `isPrefixOf ` ext = "haskell"
+   | ".dump-foreign"        `isPrefixOf ` ext = if "header file" `isSuffixOf` name
+                                                   then "c"
+                                                   else "haskell"
+   | otherwise                               = ""
    where
       ext = takeExtension pth
    
@@ -319,14 +360,16 @@ selectFormat pth name
 data Block = Block
    { blockFile     :: String
    , blockName     :: String
-   , blockDate     :: UTCTime
+   , blockDate     :: Maybe UTCTime
    , blockContents :: String
    }
 
 parseBlocks :: File -> [Block]
 parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
       Right x -> x
-      Left e  -> error (show e)
+      Left e  -> [Block (fileName file) "Whole file"
+                  Nothing
+                  (fileContents file ++ "\n\n==== Parse error ====\n" ++ show e)]
    where
       blockMark = do
          void eol
@@ -338,8 +381,14 @@ parseBlocks file = case runParser blocks (fileName file) (fileContents file) of
          name <- init <$> manyTill anyChar (char '=')
          void $ count 19 (char '=')
          void eol
-         date <- read <$> manyTill anyChar eol
-         void eol
+         dateStr <- lookAhead (manyTill anyChar eol)
+         -- date isn't always present (e.g., typechecker dumps)
+         date <- if "UTC" `isSuffixOf` dateStr
+            then do
+               void (manyTill anyChar eol)
+               void eol
+               return (Just (read dateStr))
+            else return Nothing
          return (name,date)
 
       block = do
