@@ -480,8 +480,10 @@ showPhases compIdx comp = do
          H.th (toHtml "Duration (ms)")
          H.th (toHtml "Memory (MB)")
       forM_ (phases `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
-         H.td $ H.a (toHtml (phaseName s))
-            ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
+         case phaseLog s of
+            [] -> H.td (toHtml (phaseName s))
+            _  -> H.td $ H.a (toHtml (phaseName s))
+               ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
          H.td $ toHtml (fromMaybe "-" (phaseModule s))
          H.td $ toHtml (show (phaseDuration s))
          H.td $ toHtml (show (phaseMemory s))
