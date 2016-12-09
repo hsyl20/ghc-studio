@@ -9,7 +9,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn, foldl',isInfixOf)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf)
 import Data.Maybe (fromJust, isJust, fromMaybe)
 import Data.FileEmbed
 import System.IO.Temp
@@ -39,6 +39,7 @@ import Data.Time.Clock
 import Safe
 import Extra
 import Numeric
+import Profiles
 
 
 data Compilation = Compilation
@@ -46,12 +47,6 @@ data Compilation = Compilation
    , compilSources :: [File]
    , compilLogs    :: [Log]
    , compilPhases  :: [PhaseInfo]
-   }
-
-data CompilationProfile = CompilationProfile
-   { profileName  :: String
-   , profileDesc  :: String
-   , profileFlags :: DynFlags -> DynFlags
    }
 
 data Log = Log
@@ -85,72 +80,6 @@ convertLocation = \case
       prepareFile s
          | "./" `isPrefixOf` s = drop 2 s
          | otherwise           = s
-
-defaultProfiles :: [CompilationProfile]
-defaultProfiles =
-   [ CompilationProfile
-      { profileName  = "Show passes (-O0)"
-      , profileDesc  = "Use this pass to detect the most expensive phases with -O0"
-      , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
-         { verbosity = 2 -- -dshow-passes is -v2 in fact
-         }
-      }
-   , CompilationProfile
-      { profileName  = "Show passes (-O1)"
-      , profileDesc  = "Use this pass to detect the most expensive phases with -O1"
-      , profileFlags = \dflags -> 
-         enableWarningGroup "all" 
-         $ updOptLevel 1
-         $ dflags
-            { verbosity = 2 -- -dshow-passes is -v2 in fact
-            }
-      }
-   , CompilationProfile
-      { profileName  = "Show passes (-O2)"
-      , profileDesc  = "Use this pass to detect the most expensive phases with -O2"
-      , profileFlags = \dflags -> 
-         enableWarningGroup "all" 
-         $ updOptLevel 2
-         $ dflags
-            { verbosity = 2 -- -dshow-passes is -v2 in fact
-            }
-      }
-   , CompilationProfile
-      { profileName  = "Show passes (-O0) and dump everything (-v5)"
-      , profileDesc  = "Use this pass to analyse with -O0"
-      , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
-         { verbosity = 5
-         } `dopt_set` Opt_D_dump_tc
-      }
-   , CompilationProfile
-      { profileName  = "Show passes (-O1) and dump everything (-v5)"
-      , profileDesc  = "Use this pass to analyse with -O1"
-      , profileFlags = \dflags -> 
-         enableWarningGroup "all" 
-         $ updOptLevel 1
-         $ dflags
-            { verbosity = 5
-            } `dopt_set` Opt_D_dump_tc
-      }
-   , CompilationProfile
-      { profileName  = "Show passes (-O2) and dump everything (-v5)"
-      , profileDesc  = "Use this pass to analyse with -O2"
-      , profileFlags = \dflags -> 
-         enableWarningGroup "all" 
-         $ updOptLevel 2
-         $ dflags
-            { verbosity = 5
-            } `dopt_set` Opt_D_dump_tc
-      }
-   , CompilationProfile
-      { profileName  = "Debug TypeChecker"
-      , profileDesc  = "Enable type-checker tracing"
-      , profileFlags = \dflags -> dflags
-         { verbosity = 1
-         } `dopt_set` Opt_D_dump_tc
-           `dopt_set` Opt_D_dump_tc_trace
-      }
-   ]
 
 data CompState
    = Compiling
@@ -857,13 +786,13 @@ parseBlock name contents = case runParser blocks name contents of
       blockMark = do
          void eol
          void $ count 20 (char '=')
+         void $ char ' '
+         let endmark = (char ' ' >> count 20 (char '=') >> eol)
+         bname <- manyTill anyChar (try endmark)
+         return bname
 
       blockHead = do
-         blockMark
-         void $ char ' '
-         bname <- init <$> manyTill anyChar (char '=')
-         void $ count 19 (char '=')
-         void eol
+         bname <- blockMark
          dateStr <- lookAhead (manyTill anyChar (eol <|> (eof >> return "")))
          -- date isn't always present (e.g., typechecker dumps)
          date <- if "UTC" `isSuffixOf` dateStr
@@ -876,111 +805,10 @@ parseBlock name contents = case runParser blocks name contents of
 
       block = do
          (bname,date) <- blockHead
-         bcontents <- manyTill anyChar (try (lookAhead blockMark) <|> eof)
+         bcontents <- manyTill anyChar (try (lookAhead (void blockMark)) <|> eof)
          return (Block name bname date bcontents)
 
       blocks :: Parser [Block]
       blocks = many block
 
 
-enableWarningGroup :: String -> DynFlags -> DynFlags
-enableWarningGroup groupName dflags = case Map.lookup groupName groups of
-      Nothing   -> error $ "Invalid warning flag group: " ++ show groupName
-                     ++ ". Expecting one of: " ++ show (Map.keys groups)
-      Just flgs -> foldl' wopt_set dflags flgs
-   where
-      groups = Map.fromList warningGroups
-
-
-----------------------------------------------
--- TODO: remove these once GHC exports them
-
-
-warningGroups :: [(String, [WarningFlag])]
-warningGroups =
-    [ ("compat",       minusWcompatOpts)
-    , ("unused-binds", unusedBindsFlags)
-    , ("default",      standardWarnings)
-    , ("extra",        minusWOpts)
-    , ("all",          minusWallOpts)
-    , ("everything",   minusWeverythingOpts)
-    ]
-
-
--- | Warnings enabled unless specified otherwise
-standardWarnings :: [WarningFlag]
-standardWarnings -- see Note [Documenting warning flags]
-    = [ Opt_WarnOverlappingPatterns,
-        Opt_WarnWarningsDeprecations,
-        Opt_WarnDeprecatedFlags,
-        Opt_WarnDeferredTypeErrors,
-        Opt_WarnTypedHoles,
-        Opt_WarnPartialTypeSignatures,
-        Opt_WarnUnrecognisedPragmas,
-        Opt_WarnDuplicateExports,
-        Opt_WarnOverflowedLiterals,
-        Opt_WarnEmptyEnumerations,
-        Opt_WarnMissingFields,
-        Opt_WarnMissingMethods,
-        Opt_WarnWrongDoBind,
-        Opt_WarnUnsupportedCallingConventions,
-        Opt_WarnDodgyForeignImports,
-        Opt_WarnInlineRuleShadowing,
-        Opt_WarnAlternativeLayoutRuleTransitional,
-        Opt_WarnUnsupportedLlvmVersion,
-        Opt_WarnTabs,
-        Opt_WarnUnrecognisedWarningFlags
-      ]
-
--- | Things you get with -W
-minusWOpts :: [WarningFlag]
-minusWOpts
-    = standardWarnings ++
-      [ Opt_WarnUnusedTopBinds,
-        Opt_WarnUnusedLocalBinds,
-        Opt_WarnUnusedPatternBinds,
-        Opt_WarnUnusedMatches,
-        Opt_WarnUnusedForalls,
-        Opt_WarnUnusedImports,
-        Opt_WarnIncompletePatterns,
-        Opt_WarnDodgyExports,
-        Opt_WarnDodgyImports
-      ]
-
--- | Things you get with -Wall
-minusWallOpts :: [WarningFlag]
-minusWallOpts
-    = minusWOpts ++
-      [ Opt_WarnTypeDefaults,
-        Opt_WarnNameShadowing,
-        Opt_WarnMissingSignatures,
-        Opt_WarnHiShadows,
-        Opt_WarnOrphans,
-        Opt_WarnUnusedDoBind,
-        Opt_WarnTrustworthySafe,
-        Opt_WarnUntickedPromotedConstructors,
-        Opt_WarnMissingPatternSynonymSignatures
-      ]
-
--- | Things you get with -Weverything, i.e. *all* known warnings flags
-minusWeverythingOpts :: [WarningFlag]
-minusWeverythingOpts = [ toEnum 0 .. ]
-
--- | Things you get with -Wcompat.
---
--- This is intended to group together warnings that will be enabled by default
--- at some point in the future, so that library authors eager to make their
--- code future compatible to fix issues before they even generate warnings.
-minusWcompatOpts :: [WarningFlag]
-minusWcompatOpts
-    = [ Opt_WarnMissingMonadFailInstances
-      , Opt_WarnSemigroup
-      , Opt_WarnNonCanonicalMonoidInstances
-      ]
-
--- Things you get with -Wunused-binds
-unusedBindsFlags :: [WarningFlag]
-unusedBindsFlags = [ Opt_WarnUnusedTopBinds
-                   , Opt_WarnUnusedLocalBinds
-                   , Opt_WarnUnusedPatternBinds
-                   ]
