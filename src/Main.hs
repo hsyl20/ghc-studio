@@ -753,6 +753,7 @@ selectFormat pth name
    | "Specialise"                      == name = "haskell"
    | "Desugar"              `isInfixOf` name   = "haskell"
    | "STG"                  `isInfixOf` name   = "haskell"
+   | "Simplifier"          `isPrefixOf` name   = "haskell"
    | "Parser"                          == name = "haskell"
    | "Derived instances"               == name = "haskell"
    | ".dump-asm"            `isPrefixOf` ext   = "nasm"
