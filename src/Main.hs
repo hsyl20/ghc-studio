@@ -295,6 +295,9 @@ showCompilation i comp = do
    H.h2 (toHtml "Phases: summary")
    showPhasesSummary comp
 
+   H.h2 (toHtml "Core Phases: summary")
+   showCoreSizeEvolution i comp
+
    H.h2 (toHtml "Phases: details")
    showPhases i comp
    H.br
@@ -505,7 +508,7 @@ showPhase _ phase = do
       PhaseCoreSizeLog s  ->
          H.table (do
             H.tr $ do
-               H.th (toHtml "Result name")
+               H.th (toHtml "Pass")
                H.th (toHtml "Terms")
                H.th (toHtml "Types")
                H.th (toHtml "Coercions")
@@ -545,6 +548,30 @@ showPhases compIdx comp = do
 
 htmlFloat :: Float -> Html
 htmlFloat f = toHtml (showFFloat (Just 2) f "")
+
+showCoreSizeEvolution :: Int -> Compilation -> Html
+showCoreSizeEvolution compIdx comp = do
+   let phases = compilPhases comp
+   H.table (do
+      H.tr $ do
+         H.th (toHtml "Module")
+         H.th (toHtml "Phase")
+         H.th (toHtml "Pass")
+         H.th (toHtml "Terms")
+         H.th (toHtml "Types")
+         H.th (toHtml "Coercions")
+      forM_ (phases `zip` [0..]) $ \(phase,(pid :: Int)) -> do
+         forM_ (phaseLog phase) $ \case
+            PhaseCoreSizeLog s -> H.tr $ do 
+               H.td $ toHtml (fromMaybe "-" (phaseModule phase))
+               H.td $ H.a (toHtml (phaseName phase))
+                  ! A.href (toValue ("/compilation/"++show compIdx++"/phase/"++show pid))
+               H.td $ toHtml (phaseCoreSizeName s)
+               H.td $ toHtml (show (phaseCoreSizeTerms s))
+               H.td $ toHtml (show (phaseCoreSizeTypes s))
+               H.td $ toHtml (show (phaseCoreSizeCoercions s))
+            _ -> return ()
+      ) ! A.class_ (toValue "phaseTable")
 
 showPhasesSummary :: Compilation -> Html
 showPhasesSummary comp = do
