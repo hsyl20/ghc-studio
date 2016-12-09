@@ -88,9 +88,36 @@ convertLocation = \case
 defaultProfiles :: [CompilationProfile]
 defaultProfiles =
    [ CompilationProfile
+      { profileName  = "Show passes (-O0)"
+      , profileDesc  = "Use this pass to detect the most expensive phases with -O0"
+      , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
+         { verbosity = 2 -- -dshow-passes is -v2 in fact
+         }
+      }
+   , CompilationProfile
+      { profileName  = "Show passes (-O1)"
+      , profileDesc  = "Use this pass to detect the most expensive phases with -O1"
+      , profileFlags = \dflags -> 
+         enableWarningGroup "all" 
+         $ updOptLevel 1
+         $ dflags
+            { verbosity = 2 -- -dshow-passes is -v2 in fact
+            }
+      }
+   , CompilationProfile
+      { profileName  = "Show passes (-O2)"
+      , profileDesc  = "Use this pass to detect the most expensive phases with -O2"
+      , profileFlags = \dflags -> 
+         enableWarningGroup "all" 
+         $ updOptLevel 2
+         $ dflags
+            { verbosity = 2 -- -dshow-passes is -v2 in fact
+            }
+      }
+   , CompilationProfile
       { profileName  = "Maximal verbosity"
       , profileDesc  = "Use maximal verbosity (-v5) and -Wall: the intermediate representation after each compilation phase is dumped"
-      , profileFlags = \dflags -> enableGroup "all" $ dflags
+      , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
          { verbosity = 5
          }
       }
@@ -99,7 +126,7 @@ defaultProfiles =
       , profileDesc  = "Use maximal verbosity (-v5), -Wall and maximal optimization (-O2)"
       , profileFlags = \dflags ->
            updOptLevel 2
-         $ enableGroup "all" $ dflags
+         $ enableWarningGroup "all" $ dflags
             { verbosity = 5
             }
       }
@@ -438,7 +465,7 @@ data PhaseSize = PhaseSize
    } deriving (Show)
 
 data PhaseLog
-   = PhaseRawLog Log
+   = PhaseRawLog [Log]
    | PhaseSizeLog PhaseSize
    | PhaseDumpLog [Block]
 
@@ -450,11 +477,21 @@ data PhaseInfo = PhaseInfo
    , phaseLog         :: [PhaseLog]
    }
 
+emptyPhaseInfo :: PhaseInfo
+emptyPhaseInfo = PhaseInfo
+   { phaseName     = ""
+   , phaseModule   = Nothing
+   , phaseDuration = 0
+   , phaseMemory   = 0
+   , phaseLog      = []
+   }
+   
+
 showPhase :: Compilation -> PhaseInfo -> Html
 showPhase _ phase = do
    H.h2 $ toHtml ("Phase: " ++ phaseName phase)
    forM_ (phaseLog phase) $ \case
-      PhaseRawLog l   -> showLogTable [l]
+      PhaseRawLog ls  -> showLogTable ls
       PhaseSizeLog s  ->
          H.table (do
             H.tr $ do
@@ -462,6 +499,7 @@ showPhase _ phase = do
                H.th (toHtml "Terms")
                H.th (toHtml "Types")
                H.th (toHtml "Coercions")
+            H.tr $ do
                H.td $ toHtml (phaseSizeName s)
                H.td $ toHtml (show (phaseSizeTerms s))
                H.td $ toHtml (show (phaseSizeTypes s))
@@ -496,44 +534,50 @@ showPhases compIdx comp = do
       ) ! A.class_ (toValue "phaseTable")
 
 makePhaseInfos :: [Log] -> [PhaseInfo]
-makePhaseInfos = go Nothing
+makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
    where
-      go :: Maybe PhaseInfo -> [Log] -> [PhaseInfo]
-      go (Just c) [] = [reverseLog c]
-      go Nothing  [] = []
-      go c    (x:ls) =
+      iname = "****"
+      
+      go :: PhaseInfo -> [Log] -> [PhaseInfo]
+      go c []     = [reverseLog c]
+      go c (x:ls) =
          let l = logMessage' x in
          case parseMaybe parsePhaseBegin l of
-            Just b  -> let c' = PhaseInfo
+            Just b  -> let c' = emptyPhaseInfo
                                  { phaseName     = phaseBeginName b
                                  , phaseModule   = phaseBeginModule b
-                                 , phaseDuration = 0
-                                 , phaseMemory   = 0
-                                 , phaseLog      = []
                                  }
-                       in case c of
-                        Just d  -> reverseLog d:go (Just c') ls
-                        Nothing -> go (Just c') ls
-            Nothing -> case parseMaybe parsePhaseSize l of
-               Just ps -> go (appendLog (PhaseSizeLog ps) c) ls
-               Nothing -> case parseMaybe parsePhaseStat l of
-                  Just ps -> let ~(Just c') = c
-                                 c'' = c'
-                                    { phaseDuration = phaseStatDuration ps
-                                    , phaseMemory   = phaseStatMemory ps
+                       in case (phaseName c, phaseLog c) of
+                           -- ditch empty intermediate phase
+                           (n,[]) | n == iname -> go c' ls
+                           _                   -> reverseLog c:go c' ls
+            Nothing -> do
+               case parseMaybe parsePhaseSize l of
+                  Just ps -> go (appendLog (PhaseSizeLog ps) c) ls
+                  Nothing -> case parseMaybe parsePhaseStat l of
+                     Just ps -> let c' = c
+                                       { phaseDuration = phaseStatDuration ps
+                                       , phaseMemory   = phaseStatMemory ps
+                                       }
+                                in c' : go (emptyPhaseInfo { phaseName = iname}) ls
+                     Nothing -> case logSeverity x of
+                        SevDump -> go (appendLog (PhaseDumpLog (parseBlock "" l)) c) ls
+                        _       -> case phaseLog c of
+                           -- concat consecutive raw logs
+                           (PhaseRawLog rl:rs) ->
+                              let c' = c
+                                    { phaseLog = PhaseRawLog (rl++[x]) : rs
                                     }
-                             in c'' : go Nothing ls
-                  Nothing -> case logSeverity x of
-                     SevDump -> go (appendLog (PhaseDumpLog (parseBlock "" l)) c) ls
-                     _       -> go (appendLog (PhaseRawLog x) c) ls
+                               in go c' ls
+
+                           _                  -> go (appendLog (PhaseRawLog [x]) c) ls
                         
 
       reverseLog :: PhaseInfo -> PhaseInfo
       reverseLog phi = phi { phaseLog = reverse (phaseLog phi)}
 
-      appendLog :: PhaseLog -> Maybe PhaseInfo -> Maybe PhaseInfo
-      appendLog l (Just phi) = Just $ phi { phaseLog = l:phaseLog phi }
-      appendLog _ Nothing    = Nothing
+      appendLog :: PhaseLog -> PhaseInfo -> PhaseInfo
+      appendLog l phi = phi { phaseLog = l:phaseLog phi }
 
       logMessage' l = showSDoc (logDynFlags l) (logMessage l)
 
@@ -604,6 +648,15 @@ selectFormat pth name
    | "Post control-flow optimisations" == name = "c"
    | "after setInfoTableStackMap"      == name = "c"
    | "Cmm"                  `isInfixOf` name   = "c"
+   | "Common sub-expression"           == name = "haskell"
+   | "Occurrence analysis"             == name = "haskell"
+   | "worker Wrapper binds"            == name = "haskell"
+   | "Demand analysis"                 == name = "haskell"
+   | "Called arity analysis"           == name = "haskell"
+   | "Specialise"                      == name = "haskell"
+   | "Desugar"              `isInfixOf` name   = "haskell"
+   | "STG"                  `isInfixOf` name   = "haskell"
+   | "Parser"                          == name = "haskell"
    | ".dump-asm"            `isPrefixOf` ext   = "nasm"
    | ".dump-cmm"            `isPrefixOf` ext   = "c"
    | ".dump-opt-cmm"        `isPrefixOf` ext   = "c"
@@ -671,8 +724,8 @@ parseBlock name contents = case runParser blocks name contents of
       blocks = many block
 
 
-enableGroup :: String -> DynFlags -> DynFlags
-enableGroup groupName dflags = case Map.lookup groupName groups of
+enableWarningGroup :: String -> DynFlags -> DynFlags
+enableWarningGroup groupName dflags = case Map.lookup groupName groups of
       Nothing   -> error $ "Invalid warning flag group: " ++ show groupName
                      ++ ". Expecting one of: " ++ show (Map.keys groups)
       Just flgs -> foldl' wopt_set dflags flgs
