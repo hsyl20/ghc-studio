@@ -120,7 +120,7 @@ defaultProfiles =
       , profileDesc  = "Use this pass to analyse with -O0"
       , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
          { verbosity = 5
-         }
+         } `dopt_set` Opt_D_dump_tc
       }
    , CompilationProfile
       { profileName  = "Show passes (-O1) and dump everything (-v5)"
@@ -130,7 +130,7 @@ defaultProfiles =
          $ updOptLevel 1
          $ dflags
             { verbosity = 5
-            }
+            } `dopt_set` Opt_D_dump_tc
       }
    , CompilationProfile
       { profileName  = "Show passes (-O2) and dump everything (-v5)"
@@ -140,7 +140,7 @@ defaultProfiles =
          $ updOptLevel 2
          $ dflags
             { verbosity = 5
-            }
+            } `dopt_set` Opt_D_dump_tc
       }
    , CompilationProfile
       { profileName  = "Debug TypeChecker"
@@ -208,7 +208,8 @@ main = withSocketsDo $ do
                fileFilter <- optional $ look "file"
                case Map.lookup i cs' of
                   Nothing             -> mempty
-                  Just (Compiling {}) -> ok $ toResponse $ appTemplate title $ showCompiling i
+                  Just (Compiling {}) -> do
+                     ok $ toResponse $ showCompiling title i
                   Just (Compiled c)   -> msum
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
@@ -311,8 +312,27 @@ showWelcome files profs = do
          H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
          H.td $ toHtml (profileDesc prof)
 
-showCompiling :: Int -> Html
-showCompiling compIdx = do
+-- | Template of all pages
+showCompiling :: String -> Int -> Html
+showCompiling title compIdx = docTypeHtml $ do
+   H.head $ do
+      H.title (toHtml "GHC Web")
+      H.meta ! A.httpEquiv (toValue "Content-Type")
+             ! A.content   (toValue "text/html;charset=utf-8")
+      H.meta ! A.httpEquiv (toValue "refresh")
+             ! A.content   (toValue "2")
+      H.link ! A.rel       (toValue "stylesheet") 
+             ! A.type_     (toValue "text/css")
+             ! A.href      (toValue "/css/style.css")
+      H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
+   H.body $ do
+      H.div (toHtml $ "GHC Web " ++ " / " ++ title)
+         ! A.class_ (toValue "headtitle")
+      H.div (do
+         H.a (toHtml ("Home")) ! A.href (toValue "/")
+         toHtml "  -  "
+         H.a (toHtml ("Quit")) ! A.href (toValue "/quit")
+         ) ! A.class_ (toValue "panel")
    toHtml "Compiling..."
    H.br
    H.a (toHtml "Refresh")
