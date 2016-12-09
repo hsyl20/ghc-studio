@@ -152,6 +152,10 @@ defaultProfiles =
       }
    ]
 
+data CompState
+   = Compiling
+   | Compiled Compilation
+
 main :: IO ()
 main = withSocketsDo $ do
 
@@ -187,17 +191,25 @@ main = withSocketsDo $ do
          case ps `atMay` i of
             Nothing   -> mempty
             Just prof -> do
-               cs <- liftIO $ readTVarIO comps
-               when (Map.notMember i cs) $ do
-                  comp <- liftIO $ compileFiles infiles prof
-                  liftIO $ atomically $ modifyTVar comps (Map.insert i comp)
+               needCompile <- liftIO $ atomically $ do
+                  cs <- readTVar comps
+                  if Map.notMember i cs
+                     then do
+                        modifyTVar comps (Map.insert i Compiling)
+                        return True
+                     else return False
+               
+               when needCompile $ liftIO $ void $ forkIO $ do
+                  comp <- compileFiles infiles prof
+                  atomically $ modifyTVar comps (Map.insert i (Compiled comp))
 
                cs' <- liftIO $ readTVarIO comps
                let title = profileName prof
                fileFilter <- optional $ look "file"
                case Map.lookup i cs' of
-                  Nothing -> mempty
-                  Just c  -> msum
+                  Nothing             -> mempty
+                  Just (Compiling {}) -> ok $ toResponse $ appTemplate title $ showCompiling i
+                  Just (Compiled c)   -> msum
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
                      , dir "phase" $ path $ \phaseIdx -> do
@@ -298,6 +310,13 @@ showWelcome files profs = do
       H.tr $ do
          H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
          H.td $ toHtml (profileDesc prof)
+
+showCompiling :: Int -> Html
+showCompiling compIdx = do
+   toHtml "Compiling..."
+   H.br
+   H.a (toHtml "Refresh")
+      ! A.href (toValue ("/compilation/"++show compIdx))
 
 showInputFile :: File -> Html
 showInputFile file = do
