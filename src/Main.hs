@@ -310,7 +310,7 @@ showCompilation :: Int -> Compilation -> Html
 showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
-   H.h1 (toHtml "Analyse")
+   H.h1 (toHtml "Analysis")
 
    H.h2 (toHtml "Phases: summary")
    showPhasesSummary comp
@@ -765,6 +765,7 @@ selectFormat pth name
    | "Desugar"              `isInfixOf` name   = "haskell"
    | "STG"                  `isInfixOf` name   = "haskell"
    | "Parser"                          == name = "haskell"
+   | "Derived instances"               == name = "haskell"
    | ".dump-asm"            `isPrefixOf` ext   = "nasm"
    | ".dump-cmm"            `isPrefixOf` ext   = "c"
    | ".dump-opt-cmm"        `isPrefixOf` ext   = "c"
