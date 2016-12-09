@@ -67,6 +67,11 @@ a {
 .logtable {
    text-align:center;
    border: solid 1px gray;
+   margin:auto;
+}
+
+.logtable td, th {
+   vertical-align:top;
 }
 
 .logTableMessage {
@@ -88,4 +93,17 @@ a {
 
 .dynflags {
    margin:auto;
+   text-align:center;
+}
+
+.dynflags table {
+   margin:auto;
+}
+
+h2 {
+   text-align:center;
+}
+
+h3 {
+   text-align:center;
 }

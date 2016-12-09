@@ -437,11 +437,11 @@ showLogTable logs = do
                SevWarning     -> "Warning"
                SevError       -> "Error"
             H.td (toHtml $ case logReason clog of
-               NoReason    -> "None"
+               NoReason    -> "-"
                Reason flag -> getWarningFlagName flag)
                ! A.style (toValue ("min-width: 12em"))
             H.td (toHtml $ case logLocation clog of
-               Nothing -> "None"
+               Nothing -> "-"
                Just s  -> locFile s
                   ++ " (" ++ show (locStartLine s)
                   ++ "," ++ show (locStartCol  s)
@@ -483,10 +483,10 @@ showDynFlags dflags = do
 
    
    H.div (H.table $ H.tr $ do
-      showFlagEnum "General flags:" (Just fFlags) (`gopt` dflags)
-      showFlagEnum "Dump flags:" Nothing (`dopt` dflags)
-      showFlagEnum "Warning flags:" (Just wWarningFlags) (`wopt` dflags)
-      showFlagEnum "Extensions:" (Just xFlags) (`xopt` dflags)
+      showFlagEnum "General flags" (Just fFlags) (`gopt` dflags)
+      showFlagEnum "Dump flags" Nothing (`dopt` dflags)
+      showFlagEnum "Warning flags" (Just wWarningFlags) (`wopt` dflags)
+      showFlagEnum "Extensions" (Just xFlags) (`xopt` dflags)
 
       H.tr $ H.td $ do
          H.table $ do
@@ -583,10 +583,14 @@ showPhase _ phase = do
 showPhases :: Int -> Compilation -> Html
 showPhases compIdx comp = do
    let phases = compilPhases comp
+       totdur = sum (phaseDuration <$> phases)
+       totmem = sum (phaseMemory <$> phases)
    H.table (do
       H.tr $ do
          H.th (toHtml "Phase")
          H.th (toHtml "Module")
+         H.th (toHtml "Duration (%)")
+         H.th (toHtml "Memory (%)")
          H.th (toHtml "Duration (ms)")
          H.th (toHtml "Memory (MB)")
       forM_ (phases `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
@@ -595,18 +599,25 @@ showPhases compIdx comp = do
             _  -> H.td $ H.a (toHtml (phaseName s))
                ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
          H.td $ toHtml (fromMaybe "-" (phaseModule s))
+         H.td $ htmlPercent (phaseDuration s / totdur * 100)
+         H.td $ htmlPercent (phaseMemory s / totmem * 100)
          H.td $ htmlFloat (phaseDuration s)
          H.td $ htmlFloat (phaseMemory s)
       H.tr (do
          H.th $ toHtml "Total"
-         H.th $ toHtml "-"
-         H.td $ htmlFloat (sum (phaseDuration <$> phases))
-         H.td $ htmlFloat (sum (phaseMemory <$> phases))
+         H.td $ toHtml "-"
+         H.td $ toHtml "100"
+         H.td $ toHtml "100"
+         H.td $ htmlFloat totdur
+         H.td $ htmlFloat totmem
          ) ! A.style (toValue "border-top: 1px gray solid")
       ) ! A.class_ (toValue "phaseTable")
 
 htmlFloat :: Float -> Html
 htmlFloat f = toHtml (showFFloat (Just 2) f "")
+
+htmlPercent :: Float -> Html
+htmlPercent f = toHtml (showFFloat (Just 0) f "")
 
 showCoreSizeEvolution :: Int -> Compilation -> Html
 showCoreSizeEvolution compIdx comp = do
@@ -654,8 +665,8 @@ showPhasesSummary comp = do
          H.th (toHtml "Memory (MB)")
       forM_ gstat' $ \(nam,dur,mem,durp,memp) -> H.tr $ do
          H.td $ toHtml nam
-         H.td $ htmlFloat durp
-         H.td $ htmlFloat memp
+         H.td $ htmlPercent durp
+         H.td $ htmlPercent memp
          H.td $ htmlFloat dur
          H.td $ htmlFloat mem
       H.tr (do
