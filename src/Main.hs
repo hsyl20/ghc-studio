@@ -123,7 +123,7 @@ defaultProfiles =
          }
       }
    , CompilationProfile
-      { profileName  = "Show passes (-O1) and dump (everything (-v5)"
+      { profileName  = "Show passes (-O1) and dump everything (-v5)"
       , profileDesc  = "Use this pass to analyse with -O1"
       , profileFlags = \dflags -> 
          enableWarningGroup "all" 
@@ -708,13 +708,12 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
       parsePhaseCoreSize :: Parser PhaseCoreSize
       parsePhaseCoreSize = do
          void (string "Result size of ")
-         phase <- manyTill anyChar (string "= {")
-         void (string "terms: ")
-         terms <- read <$> manyTill anyChar (char ',')
-         void (string " types: ")
-         typs <- read <$> manyTill anyChar (char ',')
-         void (string " coercions: ")
-         coes <- read <$> manyTill anyChar (char '}')
+         phase <- manyTill anyChar (string "= {terms: ")
+         -- be careful, ',' is used as a field separator and as a thousands
+         -- separator.
+         terms <- (read . replace "," "") <$> manyTill anyChar (string ", types: ")
+         typs  <- (read . replace "," "") <$> manyTill anyChar (string ", coercions: ")
+         coes  <- (read . replace "," "") <$> manyTill anyChar (char '}')
          return $ PhaseCoreSize phase terms typs coes
 
 showBlock :: Block -> Html
