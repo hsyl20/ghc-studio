@@ -102,6 +102,7 @@ main = withSocketsDo $ do
    putStrLn (printf "Starting Web server at localhost:%d" (port conf))
    httpTID <- forkIO $ simpleHTTP conf $ msum
       [ dir "css" $ dir "style.css" $ ok css
+      , dir "script.js" $ ok js
 
       , dir "quit" $ nullDir >> do
          liftIO $ putMVar quit ()
@@ -199,12 +200,15 @@ compileFiles files prof = do
 
    let phaseInfos = makePhaseInfos logs'
 
-   return $ Compilation dflgs files logs' phaseInfos
+   return (phaseInfos `seq` Compilation dflgs files logs' phaseInfos)
 
 
 
 css :: Response
 css = toResponseBS (C.pack "text/css") (L.fromStrict $(embedFile "src/style.css"))
+
+js :: Response
+js = toResponseBS (C.pack "text/javascript") (L.fromStrict $(embedFile "src/script.js"))
 
 -- | Template of all pages
 appTemplate :: String -> Html -> Html
@@ -216,6 +220,9 @@ appTemplate title bdy = docTypeHtml $ do
       H.link ! A.rel       (toValue "stylesheet") 
              ! A.type_     (toValue "text/css")
              ! A.href      (toValue "/css/style.css")
+      H.script (return ())
+               ! A.type_ (toValue "text/javascript")
+               ! A.src (toValue "script.js")
       H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
    H.body $ do
       H.div (toHtml $ "GHC Web " ++ " / " ++ title)
@@ -735,6 +742,8 @@ selectFormat pth name
    | "Post control-flow optimisations" == name = "c"
    | "after setInfoTableStackMap"      == name = "c"
    | "Cmm"                  `isInfixOf` name   = "c"
+   | "Foreign export"       `isInfixOf` name   = "c"
+   | "CAFEnv"                          == name = "haskell"
    | "Common sub-expression"           == name = "haskell"
    | "Occurrence analysis"             == name = "haskell"
    | "worker Wrapper binds"            == name = "haskell"
