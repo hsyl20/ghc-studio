@@ -654,7 +654,7 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
                                        { phaseDuration = phaseStatDuration ps
                                        , phaseMemory   = phaseStatMemory ps
                                        }
-                                in c' : go (emptyPhaseInfo { phaseName = iname}) ls
+                                in reverseLog c' : go (emptyPhaseInfo { phaseName = iname}) ls
                      Nothing -> case logSeverity x of
                         -- some dump blocks begins with "Result size of..."
                         -- We add a PhaseCoreSize for them
