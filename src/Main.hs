@@ -112,7 +112,8 @@ main = withSocketsDo $ do
          ps <- liftIO $ atomically $ readTVar profs
          ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
 
-      , dir "file" $ path $ \p -> do
+      , dir "file" $ uriRest $ \p' -> do
+         let p = if "/" `isPrefixOf` p' then tail p' else p'
          case filter ((==p) . fileName) infiles of
             []    -> mempty
             (x:_) -> ok $ toResponse $ appTemplate ("File: " ++ p) $ showInputFile x
