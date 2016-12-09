@@ -500,7 +500,7 @@ data PhaseCoreSize = PhaseCoreSize
 data PhaseLog
    = PhaseRawLog [Log]
    | PhaseCoreSizeLog PhaseCoreSize
-   | PhaseDumpLog [Block]
+   | PhaseDumpLog Block
 
 data PhaseInfo = PhaseInfo
    { phaseName        :: String
@@ -538,7 +538,7 @@ showPhase _ phase = do
                H.td $ toHtml (show (phaseCoreSizeTypes s))
                H.td $ toHtml (show (phaseCoreSizeCoercions s))
             ) ! A.class_ (toValue "phaseTable")
-      PhaseDumpLog bs -> forM_ bs showBlock
+      PhaseDumpLog b -> showBlock b
 
 
 showPhases :: Int -> Compilation -> Html
@@ -656,7 +656,21 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
                                        }
                                 in c' : go (emptyPhaseInfo { phaseName = iname}) ls
                      Nothing -> case logSeverity x of
-                        SevDump -> go (appendLog (PhaseDumpLog (parseBlock "" l)) c) ls
+                        -- some dump blocks begins with "Result size of..."
+                        -- We add a PhaseCoreSize for them
+                        SevDump -> let blks = parseBlock "" l
+                                       prep b = concat (lines (blockContents b))
+                                       pars b = if "Result size of" `isPrefixOf` (blockContents b)
+                                                then case runParser parsePhaseCoreSize "" (prep b) of
+                                                   Left _  -> Nothing
+                                                   Right v -> Just v
+                                                else Nothing
+
+                                       c'' = foldl (\c' b -> case pars b of
+                                                Nothing -> appendLog (PhaseDumpLog b) c'
+                                                Just bk -> appendLog (PhaseDumpLog b) (appendLog (PhaseCoreSizeLog bk) c'))
+                                                c blks
+                                   in go c'' ls
                         _       -> case phaseLog c of
                            -- concat consecutive raw logs
                            (PhaseRawLog rl:rs) ->
