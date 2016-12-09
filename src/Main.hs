@@ -116,18 +116,29 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Maximal verbosity"
-      , profileDesc  = "Use maximal verbosity (-v5) and -Wall: the intermediate representation after each compilation phase is dumped"
+      { profileName  = "Show passes (-O0) and dump everything (-v5)"
+      , profileDesc  = "Use this pass to analyse with -O0"
       , profileFlags = \dflags -> enableWarningGroup "all" $ dflags
          { verbosity = 5
          }
       }
    , CompilationProfile
-      { profileName  = "Maximal verbosity and optimization"
-      , profileDesc  = "Use maximal verbosity (-v5), -Wall and maximal optimization (-O2)"
-      , profileFlags = \dflags ->
-           updOptLevel 2
-         $ enableWarningGroup "all" $ dflags
+      { profileName  = "Show passes (-O1) and dump (everything (-v5)"
+      , profileDesc  = "Use this pass to analyse with -O1"
+      , profileFlags = \dflags -> 
+         enableWarningGroup "all" 
+         $ updOptLevel 1
+         $ dflags
+            { verbosity = 5
+            }
+      }
+   , CompilationProfile
+      { profileName  = "Show passes (-O2) and dump everything (-v5)"
+      , profileDesc  = "Use this pass to analyse with -O2"
+      , profileFlags = \dflags -> 
+         enableWarningGroup "all" 
+         $ updOptLevel 2
+         $ dflags
             { verbosity = 5
             }
       }
@@ -167,6 +178,10 @@ main = withSocketsDo $ do
          ps <- liftIO $ atomically $ readTVar profs
          ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
 
+      , dir "file" $ path $ \p -> do
+         case filter ((==p) . fileName) infiles of
+            []    -> mempty
+            (x:_) -> ok $ toResponse $ appTemplate ("File: " ++ p) $ showInputFile x
       , dir "compilation" $ path $ \i -> do
          ps <- liftIO $ readTVarIO profs
          case ps `atMay` i of
@@ -276,15 +291,20 @@ showWelcome files profs = do
    H.p (toHtml "This is a GHC Web frontend. It will help you debug your program and/or GHC.")
    H.p (toHtml "The following files are considered:")
    H.ul $ forM_ files $ \file -> do
-      H.li (toHtml (fileName file))
-      H.div $ toHtml
-         $ formatHtmlBlock defaultFormatOpts
-         $ highlightAs "haskell" (fileContents file)
+      H.li $ H.a (toHtml (fileName file))
+         ! A.href (toValue ("/file/"++fileName file))
    H.p (toHtml "Now you can compile your files with the profile you want:")
    H.table $ forM_ (profs `zip` [0..]) $ \(prof,(i::Int)) -> do
       H.tr $ do
          H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
          H.td $ toHtml (profileDesc prof)
+
+showInputFile :: File -> Html
+showInputFile file = do
+   H.h2 (toHtml (fileName file))
+   H.div $ toHtml
+      $ formatHtmlBlock defaultFormatOpts
+      $ highlightAs "haskell" (fileContents file)
 
 showCompilation :: Int -> Compilation -> Html
 showCompilation i comp = do
