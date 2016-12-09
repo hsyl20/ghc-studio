@@ -38,6 +38,7 @@ import System.Directory
 import Data.Time.Clock
 import Safe
 import Extra
+import Numeric
 
 
 data Compilation = Compilation
@@ -290,6 +291,11 @@ showCompilation i comp = do
    H.h1 (toHtml "GHC configuration used for this build")
    showDynFlags (compilFlags comp)
    H.h1 (toHtml "Analyse")
+
+   H.h2 (toHtml "Phases: summary")
+   showPhasesSummary comp
+
+   H.h2 (toHtml "Phases: details")
    showPhases i comp
    H.br
 
@@ -298,9 +304,11 @@ showCompilation i comp = do
             ! A.href (toValue ("/compilation/"++show i++"/logs"))
       ) ! A.style (toValue "margin:auto; text-align:center")
 
-   H.table $ forM_ (compilSources comp) $ \f -> H.tr $ do
+   H.h2 (toHtml "Sources with inline logs:")
+   H.table (forM_ (compilSources comp) $ \f -> H.tr $ do
       H.td $ H.a (toHtml (toHtml (fileName f)))
          ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
+      ) ! A.class_ (toValue "phaseTable")
 
 
 showLogs :: Maybe String -> Compilation -> Html
@@ -316,9 +324,11 @@ showLogs fileFilter comp = do
       Nothing -> showLogTable logs
       Just f  -> do
          let
+            pos = locEndLine . fromJust . logLocation
             ers = sortOn fst
                      $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
-                     $ groupOn (locEndLine . fromJust . logLocation)
+                     $ groupOn pos
+                     $ sortOn pos
                      $ filter (isJust . logLocation) logs
 
             file   = head (filter ((== f) . fileName) (compilSources comp))
@@ -457,16 +467,16 @@ data PhaseStat = PhaseStat
    , phaseStatMemory   :: Float
    } deriving (Show)
 
-data PhaseSize = PhaseSize
-   { phaseSizeName      :: String
-   , phaseSizeTerms     :: Word
-   , phaseSizeTypes     :: Word
-   , phaseSizeCoercions :: Word
+data PhaseCoreSize = PhaseCoreSize
+   { phaseCoreSizeName      :: String
+   , phaseCoreSizeTerms     :: Word
+   , phaseCoreSizeTypes     :: Word
+   , phaseCoreSizeCoercions :: Word
    } deriving (Show)
 
 data PhaseLog
    = PhaseRawLog [Log]
-   | PhaseSizeLog PhaseSize
+   | PhaseCoreSizeLog PhaseCoreSize
    | PhaseDumpLog [Block]
 
 data PhaseInfo = PhaseInfo
@@ -492,7 +502,7 @@ showPhase _ phase = do
    H.h2 $ toHtml ("Phase: " ++ phaseName phase)
    forM_ (phaseLog phase) $ \case
       PhaseRawLog ls  -> showLogTable ls
-      PhaseSizeLog s  ->
+      PhaseCoreSizeLog s  ->
          H.table (do
             H.tr $ do
                H.th (toHtml "Result name")
@@ -500,10 +510,10 @@ showPhase _ phase = do
                H.th (toHtml "Types")
                H.th (toHtml "Coercions")
             H.tr $ do
-               H.td $ toHtml (phaseSizeName s)
-               H.td $ toHtml (show (phaseSizeTerms s))
-               H.td $ toHtml (show (phaseSizeTypes s))
-               H.td $ toHtml (show (phaseSizeCoercions s))
+               H.td $ toHtml (phaseCoreSizeName s)
+               H.td $ toHtml (show (phaseCoreSizeTerms s))
+               H.td $ toHtml (show (phaseCoreSizeTypes s))
+               H.td $ toHtml (show (phaseCoreSizeCoercions s))
             ) ! A.class_ (toValue "phaseTable")
       PhaseDumpLog bs -> forM_ bs showBlock
 
@@ -523,13 +533,51 @@ showPhases compIdx comp = do
             _  -> H.td $ H.a (toHtml (phaseName s))
                ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
          H.td $ toHtml (fromMaybe "-" (phaseModule s))
-         H.td $ toHtml (show (phaseDuration s))
-         H.td $ toHtml (show (phaseMemory s))
+         H.td $ htmlFloat (phaseDuration s)
+         H.td $ htmlFloat (phaseMemory s)
       H.tr (do
          H.th $ toHtml "Total"
          H.th $ toHtml "-"
-         H.td $ toHtml (show (sum (phaseDuration <$> phases)))
-         H.td $ toHtml (show (sum (phaseMemory <$> phases)))
+         H.td $ htmlFloat (sum (phaseDuration <$> phases))
+         H.td $ htmlFloat (sum (phaseMemory <$> phases))
+         ) ! A.style (toValue "border-top: 1px gray solid")
+      ) ! A.class_ (toValue "phaseTable")
+
+htmlFloat :: Float -> Html
+htmlFloat f = toHtml (showFFloat (Just 2) f "")
+
+showPhasesSummary :: Compilation -> Html
+showPhasesSummary comp = do
+   let phases = compilPhases comp
+       groups = groupOn phaseName (sortOn phaseName phases)
+       totmem = sum (phaseMemory <$> phases)
+       totdur = sum (phaseDuration <$> phases)
+       gstat  = fmap (\group ->
+         let dur  = sum (fmap phaseDuration group)
+             mem  = sum (fmap phaseMemory group)
+             durp = dur / totdur * 100
+             memp = mem / totmem * 100
+         in (phaseName (head group),dur,mem,durp,memp)) groups
+       gstat' = reverse $ sortOn (\(_,_,_,durp,memp) -> durp+memp) gstat
+   H.table (do
+      H.tr $ do
+         H.th (toHtml "Phase")
+         H.th (toHtml "Duration (%)")
+         H.th (toHtml "Memory (%)")
+         H.th (toHtml "Duration (ms)")
+         H.th (toHtml "Memory (MB)")
+      forM_ gstat' $ \(nam,dur,mem,durp,memp) -> H.tr $ do
+         H.td $ toHtml nam
+         H.td $ htmlFloat durp
+         H.td $ htmlFloat memp
+         H.td $ htmlFloat dur
+         H.td $ htmlFloat mem
+      H.tr (do
+         H.th $ toHtml "Total"
+         H.td $ htmlFloat 100
+         H.td $ htmlFloat 100
+         H.td $ htmlFloat totdur
+         H.td $ htmlFloat totmem
          ) ! A.style (toValue "border-top: 1px gray solid")
       ) ! A.class_ (toValue "phaseTable")
 
@@ -552,8 +600,8 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
                            (n,[]) | n == iname -> go c' ls
                            _                   -> reverseLog c:go c' ls
             Nothing -> do
-               case parseMaybe parsePhaseSize l of
-                  Just ps -> go (appendLog (PhaseSizeLog ps) c) ls
+               case parseMaybe parsePhaseCoreSize l of
+                  Just ps -> go (appendLog (PhaseCoreSizeLog ps) c) ls
                   Nothing -> case parseMaybe parsePhaseStat l of
                      Just ps -> let c' = c
                                        { phaseDuration = phaseStatDuration ps
@@ -610,8 +658,8 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
          void (string "megabytes")
          return $ PhaseStat dur mem
 
-      parsePhaseSize :: Parser PhaseSize
-      parsePhaseSize = do
+      parsePhaseCoreSize :: Parser PhaseCoreSize
+      parsePhaseCoreSize = do
          void (string "Result size of ")
          phase <- manyTill anyChar (string "= {")
          void (string "terms: ")
@@ -620,7 +668,7 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
          typs <- read <$> manyTill anyChar (char ',')
          void (string " coercions: ")
          coes <- read <$> manyTill anyChar (char '}')
-         return $ PhaseSize phase terms typs coes
+         return $ PhaseCoreSize phase terms typs coes
 
 showBlock :: Block -> Html
 showBlock block = do
