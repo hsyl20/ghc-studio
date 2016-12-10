@@ -16,7 +16,8 @@ import System.IO.Temp
 import System.FilePath
 import Data.IORef
 import Control.Monad.IO.Class
-import qualified Data.Map  as Map
+import qualified Data.Map as Map
+import Data.Map (Map)
 
 import Text.Highlighting.Kate as Kate
 import Text.Megaparsec.String (Parser)
@@ -66,9 +67,6 @@ data Location = Location
    , locEndCol    :: Int
    }
 
--- TODO: add location for logs that concern the module but
--- that don't have location info
---    (e.g. "!!! Parser [A]: finished in...")
 convertLocation :: SrcSpan -> Maybe Location
 convertLocation = \case
    UnhelpfulSpan _ -> Nothing
@@ -94,7 +92,7 @@ main = withSocketsDo $ do
                File src <$> readFile src
 
    comps <- newTVarIO Map.empty
-   profs <- newTVarIO defaultProfiles
+   profs <- newTVarIO (Map.fromList ([0..] `zip` defaultProfiles))
 
    quit <- newEmptyMVar
 
@@ -112,6 +110,12 @@ main = withSocketsDo $ do
          ps <- liftIO $ atomically $ readTVar profs
          ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
 
+      , dir "manager" $ do
+         ps   <- liftIO $ readTVarIO profs
+         cs   <- liftIO $ readTVarIO comps
+         html <- showManager infiles ps cs
+         ok $ toResponse $ appTemplate "Manager" html
+
       , dir "file" $ uriRest $ \p' -> do
          let p = if "/" `isPrefixOf` p' then tail p' else p'
          case filter ((==p) . fileName) infiles of
@@ -120,7 +124,7 @@ main = withSocketsDo $ do
 
       , dir "compilation" $ path $ \i -> do
          ps <- liftIO $ readTVarIO profs
-         case ps `atMay` i of
+         case Map.lookup i ps of
             Nothing   -> mempty
             Just prof -> do
                needCompile <- liftIO $ atomically $ do
@@ -164,6 +168,7 @@ main = withSocketsDo $ do
    takeMVar quit
    killThread httpTID
    putStrLn "Quit."
+
 
 
 phasePhaseChildren :: PhaseInfo -> [PhaseInfo]
@@ -250,7 +255,7 @@ appTemplate title bdy = docTypeHtml $ do
       bdy
 
 -- | Welcoming screen
-showWelcome :: [File] -> [CompilationProfile] -> Html
+showWelcome :: [File] -> Map Int CompilationProfile -> Html
 showWelcome files profs = do
    H.p (toHtml "This is a GHC Web frontend. It will help you debug your program and/or GHC.")
    H.p (toHtml "The following files are considered:")
@@ -258,10 +263,119 @@ showWelcome files profs = do
       H.li $ H.a (toHtml (fileName file))
          ! A.href (toValue ("/file/"++fileName file))
    H.p (toHtml "Now you can compile your files with the profile you want:")
-   H.table $ forM_ (profs `zip` [0..]) $ \(prof,(i::Int)) -> do
+   H.table $ forM_ (Map.toList profs) $ \(i,prof) -> do
       H.tr $ do
          H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
          H.td $ toHtml (profileDesc prof)
+
+showManager :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showManager files profs comps = do
+   profList <- showProfileList profs comps
+   compList <- showCompilePageList profs comps
+   page     <- showPage files profs comps
+
+   return $ do
+      H.table $ H.tr $ do
+         H.td (profList >> compList) ! A.style (toValue "vertical-align:top")
+         H.td page ! A.style (toValue "vertical-align:top")
+
+isNewProfile :: ServerPartT IO Bool
+isNewProfile = (== Just "new") <$> optional (lookRead "profile")
+
+getSelectedProfile :: Map Int CompilationProfile -> ServerPartT IO (Maybe (Int,CompilationProfile))
+getSelectedProfile profs = do
+   selProf <- optional (lookRead "profile")
+   case selProf of
+      Nothing -> return Nothing
+      Just i  -> case Map.lookup i profs of
+         Nothing -> return Nothing
+         Just p  -> return (Just (i,p))
+
+getSelectedProfileId :: Map Int CompilationProfile -> ServerPartT IO (Maybe Int)
+getSelectedProfileId profs = (fmap fst) <$> getSelectedProfile profs
+
+getCompilation :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Maybe (Int,CompState))
+getCompilation profs comps = do
+   getSelectedProfile profs >>= \case
+      Nothing    -> return Nothing
+      Just (i,_) -> case Map.lookup i comps of
+         Nothing -> return Nothing
+         Just c  -> return (Just (i,c))
+
+showBox :: String -> Html -> Html
+showBox title bdy = H.div (do
+   H.div (toHtml title) ! A.class_ (toValue "boxTitle")
+   H.div bdy ! A.class_ (toValue "boxBody")
+   ) ! A.class_ (toValue "box")
+
+-- | Show already compiled profiles
+showProfileList :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showProfileList profs comps = do
+   selProf <- getSelectedProfileId profs
+   newProf <- isNewProfile
+   let ps = Map.filterWithKey (\i _ -> Map.member i comps) profs
+   let html =  showBox "Profiles" $ H.table $ do
+         forM_ (Map.toList ps) $ \(i,prof) -> H.tr $ do
+            H.td $ H.a (toHtml (profileName prof))
+               ! A.href (toValue ("/manager?profile="++show i))
+               ! if Just i /= selProf
+                  then mempty
+                  else A.class_ (toValue "selectedItem")
+         H.td $ H.a (toHtml "* New profile *")
+               ! A.href (toValue ("/manager?profile=new"))
+               ! if not newProf
+                  then mempty
+                  else A.class_ (toValue "selectedItem")
+   return html
+
+uriSelectCompilePage :: Map Int CompilationProfile -> Map Int CompState -> String -> ServerPartT IO H.AttributeValue
+uriSelectCompilePage profs comps page = do
+   selComp <- getCompilation profs comps
+   case selComp of
+      Just (p,_) -> return $ toValue $ "/manager?profile="++show p++"&page="++page
+      Nothing    -> mempty
+
+showCompilePageList :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showCompilePageList profs comps = do
+   getCompilation profs comps >>= \case
+      Nothing -> return (return ())
+      Just c  -> do -- TODO: only display pages valid for the given compil
+         currentPage <- fromMaybe "" <$> optional (look "page")
+         let makeItem title page = do
+               uri <- uriSelectCompilePage profs comps page
+               return $ H.a (toHtml title)
+                  ! A.href uri
+                  ! if currentPage /= page
+                     then mempty
+                     else A.class_ (toValue "selectedItem")
+
+         uriConf         <- makeItem "Configuration" "config"
+         uriOverview     <- makeItem "Overview" "overview"
+         uriCoreOverview <- makeItem "Core phases overview" "core-overview"
+         uriIR           <- makeItem "Intermediate representations" "ir"
+         uriFullLog      <- makeItem "Full log" "full-log"
+      
+         return $ showBox "Pages" $ H.table $ do
+            H.tr $ H.td $ uriConf
+            H.tr $ H.td $ uriOverview
+            H.tr $ H.td $ uriCoreOverview
+            H.tr $ H.td $ uriIR
+            H.tr $ H.td $ uriFullLog
+
+showPage :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showPage files profs comps = do
+   selPage <- optional (look "page")
+   case selPage of
+      Nothing -> getSelectedProfile profs >>= \case
+         Just (_,p) -> return (toHtml (profileName p))
+         Nothing    -> return $ showWelcome files profs
+      Just p  -> case p of
+         "config" -> getCompilation profs comps >>= \case
+            Nothing    -> mempty
+            Just (_,cstate) -> case cstate of
+               Compiling  -> return (toHtml "Compiling")
+               Compiled c -> return $ showDynFlags (compilFlags c)
+         _        -> return (toHtml "TODO")
 
 -- | Template of all pages
 showCompiling :: String -> Int -> Html
