@@ -10,7 +10,7 @@ import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
 import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf, intersperse)
-import Data.Maybe (fromJust, isJust, fromMaybe, mapMaybe)
+import Data.Maybe (fromJust, isJust, fromMaybe, mapMaybe, isNothing)
 import Data.FileEmbed
 import System.IO.Temp
 import System.FilePath
@@ -480,6 +480,23 @@ showDynFlags dflags = do
                      ) ! A.disabled (toValue "disabled")
          H.td $ do
             H.table $ do
+               H.tr $ do
+                  H.td $ H.label (toHtml "Language: ")
+                  -- TODO: make Language Show/Eq instances
+                  let ms = enumFrom Haskell98
+                  H.td $ H.select (do
+                     H.option (toHtml "-")
+                        ! (if isNothing (language dflags)
+                           then A.selected (toValue "selected")
+                           else mempty)
+                     forM_ ms $ \m -> 
+                        H.option (toHtml (case m of
+                                 Haskell98   -> "Haskell 98"
+                                 Haskell2010 -> "Haskell 2010"))
+                           ! (if Just (fromEnum m) == fmap fromEnum (language dflags)
+                              then A.selected (toValue "selected")
+                              else mempty)
+                     ) ! A.disabled (toValue "disabled")
                H.tr $ do
                   H.td $ H.label (toHtml "Safe mode: ")
                   -- TODO: make SafeHaskellMode an Enum/Bounded
