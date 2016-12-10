@@ -119,3 +119,7 @@ h3 {
 .box {
    margin-bottom:1em;
 }
+
+.box td {
+   white-space:nowrap;
+}

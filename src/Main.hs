@@ -114,7 +114,7 @@ main = withSocketsDo $ do
          ps   <- liftIO $ readTVarIO profs
          cs   <- liftIO $ readTVarIO comps
          html <- showManager infiles ps cs
-         ok $ toResponse $ appTemplate "Manager" html
+         ok $ toResponse $ appTemplate "" html
 
       , dir "file" $ uriRest $ \p' -> do
          let p = if "/" `isPrefixOf` p' then tail p' else p'
@@ -141,7 +141,6 @@ main = withSocketsDo $ do
 
                cs' <- liftIO $ readTVarIO comps
                let title = profileName prof
-               fileFilter <- optional $ look "file"
                let
                   findPhase :: Compilation -> [Int] -> PhaseInfo -> ServerPartT IO Response
                   findPhase c idx mpi = msum
@@ -160,8 +159,9 @@ main = withSocketsDo $ do
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
                      , dir "phase" $ findPhase c [] (compilPhases c)
-                     , dir "logs" $ ok $ toResponse $ appTemplate title $
-                        showLogs fileFilter c
+                     , dir "logs" $ do
+                        html <- showLogs infiles c
+                        ok $ toResponse $ appTemplate title $ html
                      ]
       ]
 
@@ -234,7 +234,7 @@ js = toResponseBS (C.pack "text/javascript") (L.fromStrict $(embedFile "src/scri
 appTemplate :: String -> Html -> Html
 appTemplate title bdy = docTypeHtml $ do
    H.head $ do
-      H.title (toHtml "GHC Web")
+      H.title (toHtml "GHC Studio")
       H.meta ! A.httpEquiv (toValue "Content-Type")
              ! A.content   (toValue "text/html;charset=utf-8")
       H.link ! A.rel       (toValue "stylesheet") 
@@ -245,7 +245,7 @@ appTemplate title bdy = docTypeHtml $ do
                ! A.src (toValue "script.js")
       H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
    H.body $ do
-      H.div (toHtml $ "GHC Web " ++ " / " ++ title)
+      H.div (toHtml $ "GHC Studio " ++ if null title then "" else " / " ++ title)
          ! A.class_ (toValue "headtitle")
       H.div (do
          H.a (toHtml ("Home")) ! A.href (toValue "/")
@@ -314,14 +314,14 @@ showProfileList profs comps = do
    selProf <- getSelectedProfileId profs
    newProf <- isNewProfile
    let ps = Map.filterWithKey (\i _ -> Map.member i comps) profs
-   let html =  showBox "Profiles" $ H.table $ do
+   let html =  showBox "Runs" $ H.table $ do
          forM_ (Map.toList ps) $ \(i,prof) -> H.tr $ do
             H.td $ H.a (toHtml (profileName prof))
                ! A.href (toValue ("/manager?profile="++show i))
                ! if Just i /= selProf
                   then mempty
                   else A.class_ (toValue "selectedItem")
-         H.td $ H.a (toHtml "* New profile *")
+         H.td $ H.a (toHtml "* New run *")
                ! A.href (toValue ("/manager?profile=new"))
                ! if not newProf
                   then mempty
@@ -352,13 +352,15 @@ showCompilePageList profs comps = do
          uriConf         <- makeItem "Configuration" "config"
          uriOverview     <- makeItem "Overview" "overview"
          uriCoreOverview <- makeItem "Core phases overview" "core-overview"
+         uriAllPhases    <- makeItem "All phases" "all-phases"
          uriIR           <- makeItem "Intermediate representations" "ir"
          uriFullLog      <- makeItem "Full log" "full-log"
       
-         return $ showBox "Pages" $ H.table $ do
+         return $ showBox "Run infos" $ H.table $ do
             H.tr $ H.td $ uriConf
             H.tr $ H.td $ uriOverview
             H.tr $ H.td $ uriCoreOverview
+            H.tr $ H.td $ uriAllPhases
             H.tr $ H.td $ uriIR
             H.tr $ H.td $ uriFullLog
 
@@ -367,15 +369,37 @@ showPage files profs comps = do
    selPage <- optional (look "page")
    case selPage of
       Nothing -> getSelectedProfile profs >>= \case
-         Just (_,p) -> return (toHtml (profileName p))
-         Nothing    -> return $ showWelcome files profs
-      Just p  -> case p of
-         "config" -> getCompilation profs comps >>= \case
-            Nothing    -> mempty
-            Just (_,cstate) -> case cstate of
-               Compiling  -> return (toHtml "Compiling")
-               Compiled c -> return $ showDynFlags (compilFlags c)
-         _        -> return (toHtml "TODO")
+         Just (_,p) -> showProfile p
+         Nothing    -> isNewProfile >>= \case
+            True  -> showProfileListPage profs comps
+            False -> showDefault files profs comps
+      Just p  -> getCompilation profs comps >>= \case
+         Nothing    -> mempty
+         Just (ci,cstate) -> case cstate of
+            Compiling  -> return (toHtml "Compiling")
+            Compiled c -> case p of
+               "config"        -> return $ showDynFlags (compilFlags c)
+               "overview"      -> return $ showPhasesSummary c
+               "core-overview" -> return (showCoreSizeEvolution ci c)
+               "all-phases"    -> return (showPhases ci c)
+               "full-log"      -> showLogs files c
+               _               -> return (toHtml "TODO")
+
+showDefault :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showDefault _ _ _ = return $ do
+   H.p $ toHtml "GHC studio helps you debug your program and/or GHC."
+   H.p $ toHtml "Start a compilation by choosing \"New run\" on the left"
+
+showProfileListPage :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showProfileListPage profs _comps = return $ do
+   H.table $ forM_ (Map.toList profs) $ \(i,prof) -> do
+      H.tr $ do
+         H.td $ H.a (toHtml (profileName prof)) 
+            ! A.href (toValue ("/compilation/"++show i))
+         H.td $ toHtml (profileDesc prof)
+
+showProfile :: CompilationProfile -> ServerPartT IO Html
+showProfile prof = return $ toHtml (profileName prof)
 
 -- | Template of all pages
 showCompiling :: String -> Int -> Html
@@ -438,50 +462,69 @@ showCompilation i comp = do
       ) ! A.class_ (toValue "phaseTable")
 
 
-showLogs :: Maybe String -> Compilation -> Html
-showLogs fileFilter comp = do
-   let
-      logFilter clog = case (fileFilter,logLocation clog) of
-         (Nothing,_)      -> True
-         (Just f, Just s) -> locFile s == f
-         _                -> False
-      logs = filter logFilter (compilLogs comp)
+showLogs :: [File] -> Compilation -> ServerPartT IO Html
+showLogs files comp = do
+   fileFilter <- optional $ look "file"
+   prof <- look "profile"
 
-   case fileFilter of
-      Nothing -> showLogTable logs
-      Just f  -> do
-         let
-            pos = locEndLine . fromJust . logLocation
-            ers = sortOn fst
-                     $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
-                     $ groupOn pos
-                     $ sortOn pos
-                     $ filter (isJust . logLocation) logs
+   let filterHtml = do
+         toHtml "Restrict to file:"
+         H.ul $ do
+            H.li $ H.a (toHtml "All")
+               ! A.href (toValue ("/manager?profile="++prof++"&page=full-log"))
+               ! if fileFilter /= Nothing
+                  then mempty
+                  else A.class_ (toValue "selectedItem")
+            forM_ files $ \file -> do
+               H.li $ H.a (toHtml (fileName file))
+                  ! A.href (toValue ("/manager?profile="++prof++"&page=full-log&file="++fileName file))
+                  ! if fileFilter /= Just (fileName file)
+                     then mempty
+                     else A.class_ (toValue "selectedItem")
 
-            file   = head (filter ((== f) . fileName) (compilSources comp))
-            source = highlightAs "haskell" (fileContents file)
+   return $ do
+      filterHtml
+      let
+         logFilter clog = case (fileFilter,logLocation clog) of
+            (Nothing,_)      -> True
+            (Just f, Just s) -> locFile s == f
+            _                -> False
+         logs = filter logFilter (compilLogs comp)
 
-            go _           []  []               = return ()
-            go currentLine src []               = do
-               let opts = defaultFormatOpts
-                     { numberLines = True
-                     , startNumber = currentLine+1
-                     }
-               formatHtmlBlock opts src
-            go currentLine src ((n,errs):errors)
-               | n == currentLine = showLogTable errs >> go (currentLine+1) src errors
-               | otherwise        = do
-                  let (src1,src2) = splitAt (n - currentLine) src
+      case fileFilter of
+         Nothing -> showLogTable logs
+         Just f  -> do
+            let
+               pos = locEndLine . fromJust . logLocation
+               ers = sortOn fst
+                        $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
+                        $ groupOn pos
+                        $ sortOn pos
+                        $ filter (isJust . logLocation) logs
+
+               file   = head (filter ((== f) . fileName) (compilSources comp))
+               source = highlightAs "haskell" (fileContents file)
+
+               go _           []  []               = return ()
+               go currentLine src []               = do
                   let opts = defaultFormatOpts
                         { numberLines = True
                         , startNumber = currentLine+1
                         }
-                  formatHtmlBlock opts src1
-                  showLogTable errs
-                  go n src2 errors
+                  formatHtmlBlock opts src
+               go currentLine src ((n,errs):errors)
+                  | n == currentLine = showLogTable errs >> go (currentLine+1) src errors
+                  | otherwise        = do
+                     let (src1,src2) = splitAt (n - currentLine) src
+                     let opts = defaultFormatOpts
+                           { numberLines = True
+                           , startNumber = currentLine+1
+                           }
+                     formatHtmlBlock opts src1
+                     showLogTable errs
+                     go n src2 errors
 
-         H.h2 (toHtml "Source inlined logs:")
-         H.div $ toHtml $ go 0 source ers
+            H.div $ toHtml $ go 0 source ers
 
 showLogTable :: [Log] -> Html
 showLogTable logs = do
