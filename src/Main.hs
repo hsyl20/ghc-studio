@@ -28,7 +28,7 @@ import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy as L
 
 import GHC
-import Outputable (SDoc,PprStyle,renderWithStyle,showSDoc)
+import Outputable (SDoc,PprStyle,renderWithStyle,showSDoc,ppr)
 import GHC.Paths ( libdir )
 import FastString (unpackFS)
 import DynFlags
@@ -433,40 +433,65 @@ showDynFlags dflags = do
 
 
    
-   H.div (H.table $ H.tr $ do
-      showFlagEnum "General flags" (Just fFlags) (`gopt` dflags)
-      showFlagEnum "Dump flags" Nothing (`dopt` dflags)
-      showFlagEnum "Warning flags" (Just wWarningFlags) (`wopt` dflags)
-      showFlagEnum "Extensions" (Just xFlags) (`xopt` dflags)
+   H.div (H.table $ do
+      H.tr $ H.td (do
+         H.label (toHtml "Compiler info")
+         H.br
+         H.select (forM_ (compilerInfo dflags) $ \info -> do
+            H.option (toHtml (fst info ++ ": " ++ snd info))
+            ) ! A.size (toValue "7")
+              ! A.style (toValue "width:100%")
+         ) ! A.colspan (toValue "4")
 
-      H.tr $ H.td $ do
-         H.table $ do
-            H.tr $ do
-               H.td $ H.label (toHtml "Verbosity level: ")
-               H.td $ H.select (forM_ [0..5] $ \(v :: Int) -> 
-                  H.option (toHtml (show v))
-                     ! (if v == verbosity dflags
-                        then A.selected (toValue "selected")
-                        else mempty)
-                  ) ! A.disabled (toValue "disabled")
+      H.tr $ do
+         showFlagEnum "General flags" (Just fFlags) (`gopt` dflags)
+         showFlagEnum "Dump flags" Nothing (`dopt` dflags)
+         showFlagEnum "Warning flags" (Just wWarningFlags) (`wopt` dflags)
+         showFlagEnum "Extensions" (Just xFlags) (`xopt` dflags)
 
-            H.tr $ do
-               H.td $ H.label (toHtml "Optimization level: ")
-               H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
-                  H.option (toHtml (show v))
-                     ! (if v == optLevel dflags
-                        then A.selected (toValue "selected")
-                        else mempty)
-                  ) ! A.disabled (toValue "disabled")
+      H.tr $ do
+         H.td $ do
+            H.table $ do
+               H.tr $ do
+                  H.td $ H.label (toHtml "Verbosity level: ")
+                  H.td $ H.select (forM_ [0..5] $ \(v :: Int) -> 
+                     H.option (toHtml (show v))
+                        ! (if v == verbosity dflags
+                           then A.selected (toValue "selected")
+                           else mempty)
+                     ) ! A.disabled (toValue "disabled")
 
-            H.tr $ do
-               H.td $ H.label (toHtml "Debug level: ")
-               H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
-                  H.option (toHtml (show v))
-                     ! (if v == debugLevel dflags
-                        then A.selected (toValue "selected")
-                        else mempty)
-                  ) ! A.disabled (toValue "disabled")
+               H.tr $ do
+                  H.td $ H.label (toHtml "Optimization level: ")
+                  H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
+                     H.option (toHtml (show v))
+                        ! (if v == optLevel dflags
+                           then A.selected (toValue "selected")
+                           else mempty)
+                     ) ! A.disabled (toValue "disabled")
+
+               H.tr $ do
+                  H.td $ H.label (toHtml "Debug level: ")
+                  H.td $ H.select (forM_ [0..2] $ \(v :: Int) -> 
+                     H.option (toHtml (show v))
+                        ! (if v == debugLevel dflags
+                           then A.selected (toValue "selected")
+                           else mempty)
+                     ) ! A.disabled (toValue "disabled")
+         H.td $ do
+            H.table $ do
+               H.tr $ do
+                  H.td $ H.label (toHtml "Safe mode: ")
+                  -- TODO: make SafeHaskellMode an Enum/Bounded
+                  -- let ms = [minBound..maxBound]
+                  --  -- or = enumFrom Sf_None
+                  let ms = [Sf_None,Sf_Unsafe,Sf_Trustworthy,Sf_Safe]
+                  H.td $ H.select (forM_ ms $ \m -> 
+                     H.option (toHtml (showSDoc dflags (ppr m)))
+                        ! (if m == safeHaskell dflags
+                           then A.selected (toValue "selected")
+                           else mempty)
+                     ) ! A.disabled (toValue "disabled")
       ) ! A.class_ (toValue "dynflags")
 
 
@@ -534,12 +559,14 @@ showPhase compIdx _ idx phase = do
             go i ps
          PhaseDumpLog b -> showBlock b >> go i ps
          PhaseChild c   -> do
+            H.hr
             case phaseChildren c of
                [] -> H.p (toHtml ("Inner phase: "++show (phaseName c))
                          ) ! A.style (toValue ("text-align:center"))
                _  -> H.p (H.a (toHtml ("Inner phase: "++show (phaseName c))
                               ) ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++pth++show i))
                          ) ! A.style (toValue ("text-align:center"))
+            H.hr
             go (i+1) ps
    go (0 :: Int) (phaseChildren phase)
 
