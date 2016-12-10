@@ -9,7 +9,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf, intersperse)
 import Data.Maybe (fromJust, isJust, fromMaybe)
 import Data.FileEmbed
 import System.IO.Temp
@@ -117,6 +117,7 @@ main = withSocketsDo $ do
          case filter ((==p) . fileName) infiles of
             []    -> mempty
             (x:_) -> ok $ toResponse $ appTemplate ("File: " ++ p) $ showInputFile x
+
       , dir "compilation" $ path $ \i -> do
          ps <- liftIO $ readTVarIO profs
          case ps `atMay` i of
@@ -137,6 +138,18 @@ main = withSocketsDo $ do
                cs' <- liftIO $ readTVarIO comps
                let title = profileName prof
                fileFilter <- optional $ look "file"
+               let
+                  findPhase :: Compilation -> Maybe PhaseInfo -> [PhaseInfo] -> ServerPartT IO Response
+                  findPhase c mpi pis = msum
+                     [ path $ \n -> case pis `atMay` n of
+                           Nothing -> mempty
+                           Just p  -> findPhase c (Just p) (phaseChildren p)
+                     , nullDir >> case mpi of
+                           Nothing -> mempty
+                           Just p  -> ok $ toResponse $ appTemplate title $
+                                          showPhase c p
+                     ]
+                     
                case Map.lookup i cs' of
                   Nothing             -> mempty
                   Just (Compiling {}) -> do
@@ -144,11 +157,7 @@ main = withSocketsDo $ do
                   Just (Compiled c)   -> msum
                      [ nullDir >> (ok $ toResponse $ appTemplate title $
                         showCompilation i c)
-                     , dir "phase" $ path $ \phaseIdx -> do
-                        case compilPhases c `atMay` phaseIdx of
-                           Nothing    -> mempty
-                           Just phase -> ok $ toResponse $ appTemplate title $
-                                          showPhase c phase
+                     , dir "phase" $ findPhase c Nothing (compilPhases c)
                      , dir "logs" $ ok $ toResponse $ appTemplate title $
                         showLogs fileFilter c
                      ]
@@ -484,6 +493,7 @@ data PhaseInfo = PhaseInfo
    , phaseDuration    :: Float
    , phaseMemory      :: Float
    , phaseLog         :: [PhaseLog]
+   , phaseChildren    :: [PhaseInfo]
    }
 
 emptyPhaseInfo :: PhaseInfo
@@ -493,6 +503,7 @@ emptyPhaseInfo = PhaseInfo
    , phaseDuration = 0
    , phaseMemory   = 0
    , phaseLog      = []
+   , phaseChildren = []
    }
    
 
@@ -504,7 +515,7 @@ showPhase _ phase = do
       PhaseCoreSizeLog s  ->
          H.table (do
             H.tr $ do
-               H.th (toHtml "Pass")
+               H.th (toHtml "After pass")
                H.th (toHtml "Terms")
                H.th (toHtml "Types")
                H.th (toHtml "Coercions")
@@ -516,12 +527,28 @@ showPhase _ phase = do
             ) ! A.class_ (toValue "phaseTable")
       PhaseDumpLog b -> showBlock b
 
-
 showPhases :: Int -> Compilation -> Html
 showPhases compIdx comp = do
    let phases = compilPhases comp
        totdur = sum (phaseDuration <$> phases)
        totmem = sum (phaseMemory <$> phases)
+       go ps parents = do
+         let pth = concat (intersperse "/" (fmap show (reverse parents))) ++ if null parents then "" else "/"
+             ind = concat (replicate (4*length parents) "&nbsp;") ++ " * "
+             nm p = H.preEscapedToHtml ind >> toHtml (phaseName p)
+         forM_ (ps `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
+            case phaseLog s of
+               [] -> H.td (nm s) ! A.style (toValue "text-align:left")
+               _  -> H.td (H.a (nm s)
+                  ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++pth++show idx))
+                  ) ! A.style (toValue "text-align:left")
+            H.td $ toHtml (fromMaybe "-" (phaseModule s))
+            H.td $ htmlPercent (phaseDuration s / totdur * 100)
+            H.td $ htmlPercent (phaseMemory s / totmem * 100)
+            H.td $ htmlFloat (phaseDuration s)
+            H.td $ htmlFloat (phaseMemory s)
+            go (phaseChildren s) (idx:parents)
+
    H.table (do
       H.tr $ do
          H.th (toHtml "Phase")
@@ -530,16 +557,7 @@ showPhases compIdx comp = do
          H.th (toHtml "Memory (%)")
          H.th (toHtml "Duration (ms)")
          H.th (toHtml "Memory (MB)")
-      forM_ (phases `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
-         case phaseLog s of
-            [] -> H.td (toHtml (phaseName s))
-            _  -> H.td $ H.a (toHtml (phaseName s))
-               ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++show idx))
-         H.td $ toHtml (fromMaybe "-" (phaseModule s))
-         H.td $ htmlPercent (phaseDuration s / totdur * 100)
-         H.td $ htmlPercent (phaseMemory s / totmem * 100)
-         H.td $ htmlFloat (phaseDuration s)
-         H.td $ htmlFloat (phaseMemory s)
+      go phases []
       H.tr (do
          H.th $ toHtml "Total"
          H.td $ toHtml "-"
@@ -559,34 +577,57 @@ htmlPercent f = toHtml (showFFloat (Just 0) f "")
 showCoreSizeEvolution :: Int -> Compilation -> Html
 showCoreSizeEvolution compIdx comp = do
    let phases = compilPhases comp
+       go ps parents = do
+         let pth = concat (intersperse "/" (fmap show (reverse parents))) ++ if null parents then "" else "/"
+         forM_ (ps `zip` [0..]) $ \(phase,(pid :: Int)) -> H.tr $ do
+            forM_ (phaseLog phase) $ \case
+               PhaseCoreSizeLog s -> H.tr $ do 
+                  H.td $ toHtml (fromMaybe "-" (phaseModule phase))
+                  H.td $ H.a (toHtml (phaseName phase))
+                     ! A.href (toValue ("/compilation/"++show compIdx++"/phase/"++pth++show pid))
+                  H.td $ toHtml (phaseCoreSizeName s)
+                  H.td $ toHtml (show (phaseCoreSizeTerms s))
+                  H.td $ toHtml (show (phaseCoreSizeTypes s))
+                  H.td $ toHtml (show (phaseCoreSizeCoercions s))
+               _ -> return ()
+            go (phaseChildren phase) (pid:parents)
+
+   H.p (toHtml "These are the core-to-core passes that have been applied. The number of terms, types and coercions must stay reasonable.")
    H.table (do
       H.tr $ do
          H.th (toHtml "Module")
          H.th (toHtml "Phase")
-         H.th (toHtml "Pass")
+         H.th (toHtml "After pass")
          H.th (toHtml "Terms")
          H.th (toHtml "Types")
          H.th (toHtml "Coercions")
-      forM_ (phases `zip` [0..]) $ \(phase,(pid :: Int)) -> do
-         forM_ (phaseLog phase) $ \case
-            PhaseCoreSizeLog s -> H.tr $ do 
-               H.td $ toHtml (fromMaybe "-" (phaseModule phase))
-               H.td $ H.a (toHtml (phaseName phase))
-                  ! A.href (toValue ("/compilation/"++show compIdx++"/phase/"++show pid))
-               H.td $ toHtml (phaseCoreSizeName s)
-               H.td $ toHtml (show (phaseCoreSizeTerms s))
-               H.td $ toHtml (show (phaseCoreSizeTypes s))
-               H.td $ toHtml (show (phaseCoreSizeCoercions s))
-            _ -> return ()
+      go phases []
+      -- forM_ (phases `zip` [0..]) $ \(phase,(pid :: Int)) -> do
+      --    forM_ (phaseLog phase) $ \case
+      --       PhaseCoreSizeLog s -> H.tr $ do 
+      --          H.td $ toHtml (fromMaybe "-" (phaseModule phase))
+      --          H.td $ H.a (toHtml (phaseName phase))
+      --             ! A.href (toValue ("/compilation/"++show compIdx++"/phase/"++show pid))
+      --          H.td $ toHtml (phaseCoreSizeName s)
+      --          H.td $ toHtml (show (phaseCoreSizeTerms s))
+      --          H.td $ toHtml (show (phaseCoreSizeTypes s))
+      --          H.td $ toHtml (show (phaseCoreSizeCoercions s))
+      --       _ -> return ()
       ) ! A.class_ (toValue "phaseTable")
+
+flattenPhases :: [PhaseInfo] -> [PhaseInfo]
+flattenPhases [] = []
+flattenPhases pis = pis ++ flattenPhases (concatMap phaseChildren pis)
+
 
 showPhasesSummary :: Compilation -> Html
 showPhasesSummary comp = do
-   let phases = compilPhases comp
-       groups = groupOn phaseName (sortOn phaseName phases)
-       totmem = sum (phaseMemory <$> phases)
-       totdur = sum (phaseDuration <$> phases)
-       gstat  = fmap (\group ->
+   let allphases = flattenPhases phases
+       phases    = compilPhases comp
+       groups    = groupOn phaseName (sortOn phaseName allphases)
+       totmem    = sum (phaseMemory <$> phases)
+       totdur    = sum (phaseDuration <$> phases)
+       gstat     = fmap (\group ->
          let dur  = sum (fmap phaseDuration group)
              mem  = sum (fmap phaseMemory group)
              durp = dur / totdur * 100
@@ -608,65 +649,53 @@ showPhasesSummary comp = do
          H.td $ htmlFloat mem
       H.tr (do
          H.th $ toHtml "Total"
-         H.td $ htmlFloat 100
-         H.td $ htmlFloat 100
+         H.td $ toHtml "-"
+         H.td $ toHtml "-"
          H.td $ htmlFloat totdur
          H.td $ htmlFloat totmem
          ) ! A.style (toValue "border-top: 1px gray solid")
       ) ! A.class_ (toValue "phaseTable")
 
 makePhaseInfos :: [Log] -> [PhaseInfo]
-makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
+makePhaseInfos = phaseChildren . head . go [emptyPhaseInfo { phaseName = "" }]
    where
-      iname = "****"
-      
-      go :: PhaseInfo -> [Log] -> [PhaseInfo]
-      go c []     = [reverseLog c]
-      go c (x:ls) =
-         let l = logMessage' x in
-         case parseMaybe parsePhaseBegin l of
-            Just b  -> let c' = emptyPhaseInfo
+      go :: [PhaseInfo] -> [Log] -> [PhaseInfo]
+      go []  _         = error "Unexpected missing phase infos"
+      go [p] []        = [reverseLog p]
+      go _   []        = error "Unexpected end of logs"
+      go (p:ps) (l:ls) =
+         let msg = logMessage' l in
+         case parseMaybe parsePhaseBegin msg of
+            -- add the phase to the list
+            Just b  -> let np = emptyPhaseInfo
                                  { phaseName     = phaseBeginName b
                                  , phaseModule   = phaseBeginModule b
                                  }
-                       in case (phaseName c, phaseLog c) of
-                           -- ditch empty intermediate phase
-                           (n,[]) | n == iname -> go c' ls
-                           _                   -> reverseLog c:go c' ls
+                       in go (np:p:ps) ls
             Nothing -> do
-               case parseMaybe parsePhaseCoreSize l of
-                  Just ps -> go (appendLog (PhaseCoreSizeLog ps) c) ls
-                  Nothing -> case parseMaybe parsePhaseStat l of
-                     Just ps -> let c' = c
-                                       { phaseDuration = phaseStatDuration ps
-                                       , phaseMemory   = phaseStatMemory ps
+               case parseMaybe parsePhaseCoreSize msg of
+                  Just s  -> go (appendLog (PhaseCoreSizeLog s) p:ps) ls
+                  Nothing -> case parseMaybe parsePhaseStat msg of
+                     -- phase end: add it to the parent children
+                     Just s -> let np = reverseLog $ p
+                                       { phaseDuration = phaseStatDuration s
+                                       , phaseMemory   = phaseStatMemory   s
                                        }
-                                in reverseLog c' : go (emptyPhaseInfo { phaseName = iname}) ls
-                     Nothing -> case logSeverity x of
-                        -- some dump blocks begins with "Result size of..."
-                        -- We add a PhaseCoreSize for them
-                        SevDump -> let blks = parseBlock "" l
-                                       prep b = concat (lines (blockContents b))
-                                       pars b = if "Result size of" `isPrefixOf` (blockContents b)
-                                                then case runParser parsePhaseCoreSize "" (prep b) of
-                                                   Left _  -> Nothing
-                                                   Right v -> Just v
-                                                else Nothing
-
-                                       c'' = foldl (\c' b -> case pars b of
-                                                Nothing -> appendLog (PhaseDumpLog b) c'
-                                                Just bk -> appendLog (PhaseDumpLog b) (appendLog (PhaseCoreSizeLog bk) c'))
-                                                c blks
-                                   in go c'' ls
-                        _       -> case phaseLog c of
+                                in case ps of
+                                    (parent:ps') -> go (addChild np parent:ps') ls
+                                    _            -> error "Unexpected phase infos"
+                     Nothing -> case logSeverity l of
+                        SevDump -> let blks = PhaseDumpLog <$> parseBlock "" msg
+                                   in go (foldl (flip appendLog) p blks:ps) ls
+                        _       -> case phaseLog p of
                            -- concat consecutive raw logs
                            (PhaseRawLog rl:rs) ->
-                              let c' = c
-                                    { phaseLog = PhaseRawLog (rl++[x]) : rs
+                              let np = p
+                                    { phaseLog = PhaseRawLog (rl++[l]) : rs
                                     }
-                               in go c' ls
+                               in go (np:ps) ls
 
-                           _                  -> go (appendLog (PhaseRawLog [x]) c) ls
+                           _                  -> go (appendLog (PhaseRawLog [l]) p:ps) ls
                         
 
       reverseLog :: PhaseInfo -> PhaseInfo
@@ -674,6 +703,9 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
 
       appendLog :: PhaseLog -> PhaseInfo -> PhaseInfo
       appendLog l phi = phi { phaseLog = l:phaseLog phi }
+
+      addChild :: PhaseInfo -> PhaseInfo -> PhaseInfo
+      addChild c phi = phi { phaseChildren = phaseChildren phi ++ [c] }
 
       logMessage' l = showSDoc (logDynFlags l) (logMessage l)
 
@@ -708,8 +740,8 @@ makePhaseInfos = go $ emptyPhaseInfo { phaseName = iname }
 
       parsePhaseCoreSize :: Parser PhaseCoreSize
       parsePhaseCoreSize = do
-         void (string "Result size of ")
-         phase <- manyTill anyChar (string "= {terms: ")
+         void (string "Core size after ")
+         phase <- manyTill anyChar (try (string " = {terms: "))
          -- be careful, ',' is used as a field separator and as a thousands
          -- separator.
          terms <- (read . replace "," "") <$> manyTill anyChar (string ", types: ")
@@ -731,6 +763,14 @@ showBlock block = do
 -- | Select highlighting format
 selectFormat :: FilePath -> String -> String
 selectFormat pth name
+   | "Asm -"               `isPrefixOf` name   = "nasm"
+   | "Haskell -"           `isPrefixOf` name   = "haskell"
+   | "STG -"               `isPrefixOf` name   = "haskell"
+   | "Core -"              `isPrefixOf` name   = "haskell"
+   | "C -"                 `isPrefixOf` name   = "c"
+   | "Cmm -"               `isPrefixOf` name   = "c"
+   | "Statistics -"        `isPrefixOf` name   = "c"
+
    | "Asm code"             `isInfixOf` name   = "nasm"
    | "Synthetic instructions expanded" == name = "nasm"
    | "Registers allocated"             == name = "nasm"
