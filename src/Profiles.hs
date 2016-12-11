@@ -14,7 +14,7 @@ data CompilationProfile = CompilationProfile
 defaultProfiles :: [CompilationProfile]
 defaultProfiles =
    [ CompilationProfile
-      { profileName  = "Show passes - No optimisation"
+      { profileName  = "Show passes - O0"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -24,7 +24,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Show passes - Some optimisations"
+      { profileName  = "Show passes - O1"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags -> 
          enableWarningGroup "all" 
@@ -34,7 +34,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Show passes - Most optimisations"
+      { profileName  = "Show passes - O2"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags -> 
          enableWarningGroup "all" 
@@ -44,7 +44,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Debug type-checker - No optimisation"
+      { profileName  = "Debug type-checker - O0"
       , profileDesc  = "Use this pass for type-checker debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -55,7 +55,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_tc_trace
       }
    , CompilationProfile
-      { profileName  = "Debug type-checker - Some optimisations"
+      { profileName  = "Debug type-checker - O1"
       , profileDesc  = "Use this pass for type-checker debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -66,7 +66,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_tc_trace
       }
    , CompilationProfile
-      { profileName  = "Debug type-checker - Most optimisations"
+      { profileName  = "Debug type-checker - O2"
       , profileDesc  = "Use this pass for type-checker debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -77,7 +77,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_tc_trace
       }
    , CompilationProfile
-      { profileName  = "Debug simplifier - No optimisation"
+      { profileName  = "Debug simplifier - O0"
       , profileDesc  = "Use this pass for simplifier debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -90,7 +90,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_trace
       }
    , CompilationProfile
-      { profileName  = "Debug simplifier - Some optimisations"
+      { profileName  = "Debug simplifier - O1"
       , profileDesc  = "Use this pass for simplifier debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -103,7 +103,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_trace
       }
    , CompilationProfile
-      { profileName  = "Debug simplifier - Most optimisations"
+      { profileName  = "Debug simplifier - O2"
       , profileDesc  = "Use this pass for simplifier debugging"
       , profileFlags = \dflags ->
          enableWarningGroup "all" 
@@ -116,7 +116,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_trace
       }
    , CompilationProfile
-      { profileName  = "Dump almost everything (no trace) - No optimisation"
+      { profileName  = "Dump almost everything (no trace) - O0"
       , profileDesc  = "Use this pass to dump most logs"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -136,7 +136,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_view_pattern_commoning
       }
    , CompilationProfile
-      { profileName  = "Dump almost everything (no trace) - Some optimisations"
+      { profileName  = "Dump almost everything (no trace) - O1"
       , profileDesc  = "Use this pass to dump most logs"
       , profileFlags = \dflags -> 
          enableWarningGroup "all" 
@@ -156,7 +156,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_view_pattern_commoning
       }
    , CompilationProfile
-      { profileName  = "Dump almost everything (no trace) - Most optimisations"
+      { profileName  = "Dump almost everything (no trace) - O2"
       , profileDesc  = "Use this pass to dump most logs"
       , profileFlags = \dflags -> 
          enableWarningGroup "all" 
