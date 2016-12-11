@@ -111,20 +111,10 @@ main = withSocketsDo $ do
          tempRedirect "/" (toResponse "")
 
       , nullDir >> do
-         ps <- liftIO $ atomically $ readTVar profs
-         ok $ toResponse $ appTemplate "Welcome" $ showWelcome infiles ps
-
-      , dir "manager" $ do
          ps   <- liftIO $ readTVarIO profs
          cs   <- liftIO $ readTVarIO comps
          html <- showManager infiles ps cs
-         ok $ toResponse $ appTemplate "" html
-
-      , dir "file" $ uriRest $ \p' -> do
-         let p = if "/" `isPrefixOf` p' then tail p' else p'
-         case filter ((==p) . fileName) infiles of
-            []    -> mempty
-            (x:_) -> ok $ toResponse $ appTemplate ("File: " ++ p) $ showInputFile x
+         ok $ toResponse $ appTemplate html
       ]
 
    takeMVar quit
@@ -192,9 +182,8 @@ css = toResponseBS (C.pack "text/css") (L.fromStrict $(embedFile "src/style.css"
 js :: Response
 js = toResponseBS (C.pack "text/javascript") (L.fromStrict $(embedFile "src/script.js"))
 
--- | Template of all pages
-appTemplate :: String -> Html -> Html
-appTemplate title bdy = docTypeHtml $ do
+showHead :: Html -> Html
+showHead hdr = do
    H.head $ do
       H.title (toHtml "GHC Studio")
       H.meta ! A.httpEquiv (toValue "Content-Type")
@@ -206,8 +195,12 @@ appTemplate title bdy = docTypeHtml $ do
                ! A.type_ (toValue "text/javascript")
                ! A.src (toValue "script.js")
       H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
+      hdr
+
+showBody :: Html -> Html
+showBody bdy = do
    H.body $ do
-      H.div (toHtml $ "GHC Studio " ++ if null title then "" else " / " ++ title)
+      H.div (toHtml "GHC Studio")
          ! A.class_ (toValue "headtitle")
       H.div (do
          H.a (toHtml ("Home")) ! A.href (toValue "/")
@@ -216,30 +209,24 @@ appTemplate title bdy = docTypeHtml $ do
          ) ! A.class_ (toValue "panel")
       bdy
 
--- | Welcoming screen
-showWelcome :: [File] -> Map Int CompilationProfile -> Html
-showWelcome files profs = do
-   H.p (toHtml "This is a GHC Web frontend. It will help you debug your program and/or GHC.")
-   H.p (toHtml "The following files are considered:")
-   H.ul $ forM_ files $ \file -> do
-      H.li $ H.a (toHtml (fileName file))
-         ! A.href (toValue ("/file/"++fileName file))
-   H.p (toHtml "Now you can compile your files with the profile you want:")
-   H.table $ forM_ (Map.toList profs) $ \(i,prof) -> do
-      H.tr $ do
-         H.td $ H.a (toHtml (profileName prof)) ! A.href (toValue ("/compilation/"++show i))
-         H.td $ toHtml (profileDesc prof)
+-- | Template of all pages
+appTemplate :: Html -> Html
+appTemplate bdy = docTypeHtml $ do
+   showHead (return ())
+   showBody bdy
 
 showManager :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
 showManager files profs comps = do
+   fileList <- showSourceList files
    profList <- showProfileList profs comps
    compList <- showCompilePageList profs comps
    page     <- showPage files profs comps
 
    return $ do
       H.table $ H.tr $ do
-         H.td (profList >> compList) ! A.style (toValue "vertical-align:top")
-         H.td page ! A.style (toValue "vertical-align:top")
+         H.td (fileList >> profList >> compList)
+            ! A.class_ (toValue "left-panel")
+         H.td page ! A.class_ (toValue "page")
 
 isNewProfile :: ServerPartT IO Bool
 isNewProfile = (== Just "new") <$> optional (lookRead "profile")
@@ -276,32 +263,41 @@ showProfileList profs comps = do
    selProf <- getSelectedProfileId profs
    newProf <- isNewProfile
    let ps = Map.filterWithKey (\i _ -> Map.member i comps) profs
-   let html =  showBox "Runs" $ H.table $ do
+   let html = showBox "Runs" $ H.table $ do
          forM_ (Map.toList ps) $ \(i,prof) -> H.tr $ do
             H.td $ H.a (toHtml (profileName prof))
-               ! A.href (toValue ("/manager?profile="++show i))
+               ! A.href (toValue ("/?profile="++show i))
                ! if Just i /= selProf
                   then mempty
                   else A.class_ (toValue "selectedItem")
          H.td $ H.a (toHtml "* New run *")
-               ! A.href (toValue ("/manager?profile=new"))
+               ! A.href (toValue ("/?profile=new"))
                ! if not newProf
                   then mempty
                   else A.class_ (toValue "selectedItem")
+   return html
+
+-- | Show list of input files
+showSourceList :: [File] -> ServerPartT IO Html
+showSourceList files = do
+   let html = showBox "Files" $ H.table $ do
+         forM_ files $ \file -> H.tr $ do
+            H.td $ H.a (toHtml (fileName file))
+               ! A.href (toValue ("/?page=source&file="++fileName file))
    return html
 
 uriSelectCompilePage :: Map Int CompilationProfile -> Map Int CompState -> String -> ServerPartT IO H.AttributeValue
 uriSelectCompilePage profs comps page = do
    selComp <- getCompilation profs comps
    case selComp of
-      Just (p,_) -> return $ toValue $ "/manager?profile="++show p++"&page="++page
+      Just (p,_) -> return $ toValue $ "/?profile="++show p++"&page="++page
       Nothing    -> mempty
 
 showCompilePageList :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
 showCompilePageList profs comps = do
    getCompilation profs comps >>= \case
       Nothing -> return (return ())
-      Just c  -> do -- TODO: only display pages valid for the given compil
+      Just _  -> do -- TODO: only display pages valid for the given compil
          currentPage <- fromMaybe "" <$> optional (look "page")
          let makeItem title page = do
                uri <- uriSelectCompilePage profs comps page
@@ -335,10 +331,11 @@ showPage files profs comps = do
          Nothing    -> isNewProfile >>= \case
             True  -> showProfileListPage profs comps
             False -> showDefault files profs comps
+      Just "source" -> showInputFile files
       Just p  -> getCompilation profs comps >>= \case
          Nothing    -> mempty
          Just (ci,cstate) -> case cstate of
-            Compiling  -> return (toHtml "Compiling")
+            Compiling  -> mempty
             Compiled c -> case p of
                "config"        -> return $ showDynFlags (compilFlags c)
                "overview"      -> return $ showPhasesSummary c
@@ -358,7 +355,7 @@ showProfileListPage profs _comps = return $ do
    H.table $ forM_ (Map.toList profs) $ \(i,prof) -> do
       H.tr $ do
          H.td $ H.a (toHtml (profileName prof)) 
-            ! A.href (toValue ("/manager?profile="++show i))
+            ! A.href (toValue ("/?profile="++show i))
          H.td $ toHtml (profileDesc prof)
 
 
@@ -383,45 +380,36 @@ showCompilingMaybe files profs comps = do
                   comp <- compileFiles files prof
                   atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
 
-               ok $ toResponse $ showCompiling "" pid
+               ok $ toResponse $ showCompiling
             else mempty
 
 
 showProfile :: CompilationProfile -> ServerPartT IO Html
-showProfile prof = return $ toHtml (profileName prof)
+showProfile prof = return $ do
+   H.h3 $ toHtml (profileName prof)
+   H.p $ toHtml (profileDesc prof)
 
 -- | Template of all pages
-showCompiling :: String -> Int -> Html
-showCompiling title compIdx = docTypeHtml $ do
-   H.head $ do
-      H.title (toHtml "GHC Web")
-      H.meta ! A.httpEquiv (toValue "Content-Type")
-             ! A.content   (toValue "text/html;charset=utf-8")
+showCompiling :: Html
+showCompiling = docTypeHtml $ do
+   showHead $ 
       H.meta ! A.httpEquiv (toValue "refresh")
              ! A.content   (toValue "2")
-      H.link ! A.rel       (toValue "stylesheet") 
-             ! A.type_     (toValue "text/css")
-             ! A.href      (toValue "/css/style.css")
-      H.style ! A.type_ (toValue "text/css") $ toHtml $ styleToCss tango
-   H.body $ do
-      H.div (toHtml $ "GHC Web " ++ " / " ++ title)
-         ! A.class_ (toValue "headtitle")
-      H.div (do
-         H.a (toHtml ("Home")) ! A.href (toValue "/")
-         toHtml "  -  "
-         H.a (toHtml ("Quit")) ! A.href (toValue "/quit")
-         ) ! A.class_ (toValue "panel")
-   toHtml "Compiling..."
-   H.br
-   H.a (toHtml "Refresh")
-      ! A.href (toValue ("/compilation/"++show compIdx))
+   showBody $ do
+      H.div (toHtml "Compiling...")
+         ! A.class_ (toValue "compiling")
 
-showInputFile :: File -> Html
-showInputFile file = do
-   H.h2 (toHtml (fileName file))
-   H.div $ toHtml
-      $ formatHtmlBlock defaultFormatOpts
-      $ highlightAs "haskell" (fileContents file)
+showInputFile :: [File] -> ServerPartT IO Html
+showInputFile files = do
+   p' <- look "file"
+   let p = if "/" `isPrefixOf` p' then tail p' else p'
+   case filter ((==p) . fileName) files of
+      []       -> mempty
+      (file:_) -> return $ do
+         H.h2 (toHtml (fileName file))
+         H.div $ toHtml
+            $ formatHtmlBlock defaultFormatOpts
+            $ highlightAs "haskell" (fileContents file)
 
 showLogs :: [File] -> Compilation -> ServerPartT IO Html
 showLogs files comp = do
@@ -432,13 +420,13 @@ showLogs files comp = do
          toHtml "Restrict to file:"
          H.ul $ do
             H.li $ H.a (toHtml "All")
-               ! A.href (toValue ("/manager?profile="++prof++"&page=full-log"))
+               ! A.href (toValue ("/?profile="++prof++"&page=full-log"))
                ! if fileFilter /= Nothing
                   then mempty
                   else A.class_ (toValue "selectedItem")
             forM_ files $ \file -> do
                H.li $ H.a (toHtml (fileName file))
-                  ! A.href (toValue ("/manager?profile="++prof++"&page=full-log&file="++fileName file))
+                  ! A.href (toValue ("/?profile="++prof++"&page=full-log&file="++fileName file))
                   ! if fileFilter /= Just (fileName file)
                      then mempty
                      else A.class_ (toValue "selectedItem")
@@ -713,7 +701,7 @@ showPhase compIdx comp = do
                   [] -> H.p (toHtml ("Inner phase: "++show (phaseName c))
                             ) ! A.style (toValue ("text-align:center"))
                   _  -> H.p (H.a (toHtml ("Inner phase: "++show (phaseName c))
-                                 ) ! A.href (toValue ("/manager?profile="++show compIdx ++"&page=phase&phase="++show (idx ++ [i])))
+                                 ) ! A.href (toValue ("/?profile="++show compIdx ++"&page=phase&phase="++show (idx ++ [i])))
                             ) ! A.style (toValue ("text-align:center"))
                H.hr
                go (i+1) ps
@@ -732,7 +720,7 @@ showPhases compIdx comp = do
             case phaseChildren s of
                [] -> H.td (nm s) ! A.style (toValue "text-align:left")
                _  -> H.td (H.a (nm s)
-                  ! A.href (toValue ("/manager?profile="++show compIdx ++"&page=phase&phase="++show (reverse (idx:parents))))
+                  ! A.href (toValue ("/?profile="++show compIdx ++"&page=phase&phase="++show (reverse (idx:parents))))
                   ) ! A.style (toValue "text-align:left")
             H.td $ toHtml (fromMaybe "-" (phaseModule s))
             H.td $ htmlPercent (phaseDuration s / totdur * 100)
@@ -775,7 +763,7 @@ showCoreSizeEvolution compIdx comp = do
                PhaseCoreSizeLog s -> H.tr $ do 
                   H.td $ toHtml (fromMaybe "-" (phaseModule phase))
                   H.td $ H.a (toHtml (phaseName phase))
-                     ! A.href (toValue ("/manager?profile="++show compIdx++"&page=phase&phase="++show (reverse (pid:parents))))
+                     ! A.href (toValue ("/?profile="++show compIdx++"&page=phase&phase="++show (reverse (pid:parents))))
                   H.td $ toHtml (phaseCoreSizeName s)
                   H.td $ toHtml (show (phaseCoreSizeTerms s))
                   H.td $ toHtml (show (phaseCoreSizeTypes s))

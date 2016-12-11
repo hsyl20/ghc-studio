@@ -123,3 +123,18 @@ h3 {
 .box td {
    white-space:nowrap;
 }
+
+.compiling {
+   text-align:center;
+   margin:auto;
+}
+
+.left-panel {
+   vertical-align:top;
+   min-width: 200px;
+}
+
+.page {
+   text-align:left;
+   vertical-align:top;
+}
