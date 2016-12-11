@@ -9,7 +9,7 @@ import Control.Monad
 import Text.Printf
 import Network.Socket (withSocketsDo)
 import Happstack.Server
-import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf, intersperse)
+import Data.List (isPrefixOf, isSuffixOf, sortOn, isInfixOf)
 import Data.Maybe (fromJust, isJust, fromMaybe, mapMaybe, isNothing)
 import Data.FileEmbed
 import System.IO.Temp
@@ -41,6 +41,7 @@ import Safe
 import Extra
 import Numeric
 import Profiles
+import Text.Read (readEither)
 
 
 data Compilation = Compilation
@@ -102,6 +103,9 @@ main = withSocketsDo $ do
       [ dir "css" $ dir "style.css" $ ok css
       , dir "script.js" $ ok js
 
+      -- "Compiling..." page
+      , showCompilingMaybe infiles profs comps
+
       , dir "quit" $ nullDir >> do
          liftIO $ putMVar quit ()
          tempRedirect "/" (toResponse "")
@@ -121,48 +125,6 @@ main = withSocketsDo $ do
          case filter ((==p) . fileName) infiles of
             []    -> mempty
             (x:_) -> ok $ toResponse $ appTemplate ("File: " ++ p) $ showInputFile x
-
-      , dir "compilation" $ path $ \i -> do
-         ps <- liftIO $ readTVarIO profs
-         case Map.lookup i ps of
-            Nothing   -> mempty
-            Just prof -> do
-               needCompile <- liftIO $ atomically $ do
-                  cs <- readTVar comps
-                  if Map.notMember i cs
-                     then do
-                        modifyTVar comps (Map.insert i Compiling)
-                        return True
-                     else return False
-               
-               when needCompile $ liftIO $ void $ forkIO $ do
-                  comp <- compileFiles infiles prof
-                  atomically $ modifyTVar comps (Map.insert i (Compiled comp))
-
-               cs' <- liftIO $ readTVarIO comps
-               let title = profileName prof
-               let
-                  findPhase :: Compilation -> [Int] -> PhaseInfo -> ServerPartT IO Response
-                  findPhase c idx mpi = msum
-                     [ path $ \n -> case phasePhaseChildren mpi `atMay` n of
-                           Nothing -> mempty
-                           Just p  -> findPhase c (n:idx) p
-                     , nullDir >> (ok $ toResponse $ appTemplate title
-                                      $ showPhase i c (reverse idx) mpi)
-                     ]
-                     
-               case Map.lookup i cs' of
-                  Nothing             -> mempty
-                  Just (Compiling {}) -> do
-                     ok $ toResponse $ showCompiling title i
-                  Just (Compiled c)   -> msum
-                     [ nullDir >> (ok $ toResponse $ appTemplate title $
-                        showCompilation i c)
-                     , dir "phase" $ findPhase c [] (compilPhases c)
-                     , dir "logs" $ do
-                        html <- showLogs infiles c
-                        ok $ toResponse $ appTemplate title $ html
-                     ]
       ]
 
    takeMVar quit
@@ -382,6 +344,7 @@ showPage files profs comps = do
                "overview"      -> return $ showPhasesSummary c
                "core-overview" -> return (showCoreSizeEvolution ci c)
                "all-phases"    -> return (showPhases ci c)
+               "phase"         -> showPhase ci c
                "full-log"      -> showLogs files c
                _               -> return (toHtml "TODO")
 
@@ -395,8 +358,34 @@ showProfileListPage profs _comps = return $ do
    H.table $ forM_ (Map.toList profs) $ \(i,prof) -> do
       H.tr $ do
          H.td $ H.a (toHtml (profileName prof)) 
-            ! A.href (toValue ("/compilation/"++show i))
+            ! A.href (toValue ("/manager?profile="++show i))
          H.td $ toHtml (profileDesc prof)
+
+
+showCompilingMaybe :: [File] -> TVar (Map Int CompilationProfile) -> TVar (Map Int CompState) -> ServerPartT IO Response
+showCompilingMaybe files profs comps = do
+   pid <- lookRead "profile"
+   ps <- liftIO $ readTVarIO profs
+   case Map.lookup pid ps of
+      Nothing   -> mempty
+      Just prof -> do
+         needCompile <- liftIO $ atomically $ do
+            cs <- readTVar comps
+            if Map.notMember pid cs
+               then do
+                  modifyTVar comps (Map.insert pid Compiling)
+                  return True
+               else return False
+         
+         if needCompile 
+            then do
+               liftIO $ void $ forkIO $ do
+                  comp <- compileFiles files prof
+                  atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
+
+               ok $ toResponse $ showCompiling "" pid
+            else mempty
+
 
 showProfile :: CompilationProfile -> ServerPartT IO Html
 showProfile prof = return $ toHtml (profileName prof)
@@ -433,34 +422,6 @@ showInputFile file = do
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
       $ highlightAs "haskell" (fileContents file)
-
-showCompilation :: Int -> Compilation -> Html
-showCompilation i comp = do
-   H.h1 (toHtml "GHC configuration used for this build")
-   showDynFlags (compilFlags comp)
-   H.h1 (toHtml "Analysis")
-
-   H.h2 (toHtml "Phases: summary")
-   showPhasesSummary comp
-
-   H.h2 (toHtml "Core Phases: summary")
-   showCoreSizeEvolution i comp
-
-   H.h2 (toHtml "Phases: details")
-   showPhases i comp
-   H.br
-
-   H.div
-      (H.a (toHtml "View full log")
-            ! A.href (toValue ("/compilation/"++show i++"/logs"))
-      ) ! A.style (toValue "margin:auto; text-align:center")
-
-   H.h2 (toHtml "Sources with inline logs:")
-   H.table (forM_ (compilSources comp) $ \f -> H.tr $ do
-      H.td $ H.a (toHtml (toHtml (fileName f)))
-         ! A.href (toValue ("/compilation/"++show i++"/logs?file="++fileName f))
-      ) ! A.class_ (toValue "phaseTable")
-
 
 showLogs :: [File] -> Compilation -> ServerPartT IO Html
 showLogs files comp = do
@@ -710,39 +671,53 @@ emptyPhaseInfo = PhaseInfo
    }
    
 
-showPhase :: Int -> Compilation -> [Int] -> PhaseInfo -> Html
-showPhase compIdx _ idx phase = do
-   H.h2 $ toHtml ("Phase: " ++ phaseName phase)
-   let pth = concat (intersperse "/" (fmap show idx)) ++ "/"
-   let go _ []     = return ()
-       go i (p:ps) = case p of
-         PhaseRawLog ls     -> showLogTable ls >> go i ps
-         PhaseCoreSizeLog s -> do
-            H.table (do
-               H.tr $ do
-                  H.th (toHtml "After pass")
-                  H.th (toHtml "Terms")
-                  H.th (toHtml "Types")
-                  H.th (toHtml "Coercions")
-               H.tr $ do
-                  H.td $ toHtml (phaseCoreSizeName s)
-                  H.td $ toHtml (show (phaseCoreSizeTerms s))
-                  H.td $ toHtml (show (phaseCoreSizeTypes s))
-                  H.td $ toHtml (show (phaseCoreSizeCoercions s))
-               ) ! A.class_ (toValue "phaseTable")
-            go i ps
-         PhaseDumpLog b -> showBlock b >> go i ps
-         PhaseChild c   -> do
-            H.hr
-            case phaseChildren c of
-               [] -> H.p (toHtml ("Inner phase: "++show (phaseName c))
-                         ) ! A.style (toValue ("text-align:center"))
-               _  -> H.p (H.a (toHtml ("Inner phase: "++show (phaseName c))
-                              ) ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++pth++show i))
-                         ) ! A.style (toValue ("text-align:center"))
-            H.hr
-            go (i+1) ps
-   go (0 :: Int) (phaseChildren phase)
+showPhase :: Int -> Compilation -> ServerPartT IO Html
+showPhase compIdx comp = do
+   let lookRead' x = do
+         y <- look x
+         case readEither y of
+            Left _   -> mempty
+            Right v -> return v
+   idx <- lookRead' "phase"
+   
+   let findPhase []     mpi = return mpi
+       findPhase (x:xs) mpi = case phasePhaseChildren mpi `atMay` x of
+         Nothing -> mempty
+         Just p  -> findPhase xs p
+
+   phase <- findPhase idx (compilPhases comp)
+
+   return $ do
+      H.h2 $ toHtml ("Phase: " ++ phaseName phase)
+      let go _ []     = return ()
+          go i (p:ps) = case p of
+            PhaseRawLog ls     -> showLogTable ls >> go i ps
+            PhaseCoreSizeLog s -> do
+               H.table (do
+                  H.tr $ do
+                     H.th (toHtml "After pass")
+                     H.th (toHtml "Terms")
+                     H.th (toHtml "Types")
+                     H.th (toHtml "Coercions")
+                  H.tr $ do
+                     H.td $ toHtml (phaseCoreSizeName s)
+                     H.td $ toHtml (show (phaseCoreSizeTerms s))
+                     H.td $ toHtml (show (phaseCoreSizeTypes s))
+                     H.td $ toHtml (show (phaseCoreSizeCoercions s))
+                  ) ! A.class_ (toValue "phaseTable")
+               go i ps
+            PhaseDumpLog b -> showBlock b >> go i ps
+            PhaseChild c   -> do
+               H.hr
+               case phaseChildren c of
+                  [] -> H.p (toHtml ("Inner phase: "++show (phaseName c))
+                            ) ! A.style (toValue ("text-align:center"))
+                  _  -> H.p (H.a (toHtml ("Inner phase: "++show (phaseName c))
+                                 ) ! A.href (toValue ("/manager?profile="++show compIdx ++"&page=phase&phase="++show (idx ++ [i])))
+                            ) ! A.style (toValue ("text-align:center"))
+               H.hr
+               go (i+1) ps
+      go (0 :: Int) (phaseChildren phase)
 
 showPhases :: Int -> Compilation -> Html
 showPhases compIdx comp = do
@@ -750,14 +725,14 @@ showPhases compIdx comp = do
        totdur = sum (phaseDuration <$> phases)
        totmem = sum (phaseMemory <$> phases)
        go ps parents = do
-         let pth = concat (intersperse "/" (fmap show (reverse parents))) ++ if null parents then "" else "/"
+         let
              ind = concat (replicate (4*length parents) "&nbsp;") ++ " * "
              nm p = H.preEscapedToHtml ind >> toHtml (phaseName p)
          forM_ (ps `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
             case phaseChildren s of
                [] -> H.td (nm s) ! A.style (toValue "text-align:left")
                _  -> H.td (H.a (nm s)
-                  ! A.href (toValue ("/compilation/"++show compIdx ++"/phase/"++pth++show idx))
+                  ! A.href (toValue ("/manager?profile="++show compIdx ++"&page=phase&phase="++show (reverse (idx:parents))))
                   ) ! A.style (toValue "text-align:left")
             H.td $ toHtml (fromMaybe "-" (phaseModule s))
             H.td $ htmlPercent (phaseDuration s / totdur * 100)
@@ -795,13 +770,12 @@ showCoreSizeEvolution :: Int -> Compilation -> Html
 showCoreSizeEvolution compIdx comp = do
    let phases = phasePhaseChildren (compilPhases comp)
        go ps parents = do
-         let pth = concat (intersperse "/" (fmap show (reverse parents))) ++ if null parents then "" else "/"
          forM_ (ps `zip` [0..]) $ \(phase,(pid :: Int)) -> H.tr $ do
             forM_ (phaseChildren phase) $ \case
                PhaseCoreSizeLog s -> H.tr $ do 
                   H.td $ toHtml (fromMaybe "-" (phaseModule phase))
                   H.td $ H.a (toHtml (phaseName phase))
-                     ! A.href (toValue ("/compilation/"++show compIdx++"/phase/"++pth++show pid))
+                     ! A.href (toValue ("/manager?profile="++show compIdx++"&page=phase&phase="++show (reverse (pid:parents))))
                   H.td $ toHtml (phaseCoreSizeName s)
                   H.td $ toHtml (show (phaseCoreSizeTerms s))
                   H.td $ toHtml (show (phaseCoreSizeTypes s))
