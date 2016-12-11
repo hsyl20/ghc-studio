@@ -338,7 +338,7 @@ showPage files profs comps = do
             Compiling  -> mempty
             Compiled c -> case p of
                "config"        -> return $ showDynFlags (compilFlags c)
-               "overview"      -> return $ showPhasesSummary c
+               "overview"      -> return $ showOverview c
                "core-overview" -> return (showCoreSizeEvolution ci c)
                "all-phases"    -> return (showPhases ci c)
                "phase"         -> showPhase ci c
@@ -788,41 +788,71 @@ flattenPhases [] = []
 flattenPhases pis = pis ++ flattenPhases (concatMap phasePhaseChildren pis)
 
 
-showPhasesSummary :: Compilation -> Html
-showPhasesSummary comp = do
-   let allphases = flattenPhases phases
-       phases    = phasePhaseChildren (compilPhases comp)
-       groups    = groupOn phaseName (sortOn phaseName allphases)
-       totmem    = sum (phaseMemory <$> phases)
-       totdur    = sum (phaseDuration <$> phases)
-       gstat     = fmap (\group ->
-         let dur  = sum (fmap phaseDuration group)
-             mem  = sum (fmap phaseMemory group)
-             durp = dur / totdur * 100
-             memp = mem / totmem * 100
-         in (phaseName (head group),dur,mem,durp,memp)) groups
-       gstat' = reverse $ sortOn (\(_,_,_,durp,memp) -> durp+memp) gstat
-   H.table (do
-      H.tr $ do
-         H.th (toHtml "Phase")
-         H.th (toHtml "Duration (%)")
-         H.th (toHtml "Memory (%)")
-         H.th (toHtml "Duration (ms)")
-         H.th (toHtml "Memory (MB)")
-      forM_ gstat' $ \(nam,dur,mem,durp,memp) -> H.tr $ do
-         H.td $ toHtml nam
-         H.td $ htmlPercent durp
-         H.td $ htmlPercent memp
-         H.td $ htmlFloat dur
-         H.td $ htmlFloat mem
-      H.tr (do
-         H.th $ toHtml "Total"
-         H.td $ toHtml "-"
-         H.td $ toHtml "-"
-         H.td $ htmlFloat totdur
-         H.td $ htmlFloat totmem
-         ) ! A.style (toValue "border-top: 1px gray solid")
-      ) ! A.class_ (toValue "phaseTable")
+showOverview :: Compilation -> Html
+showOverview comp = do
+   let ps     = phasePhaseChildren (compilPhases comp)
+       totmem = sum (phaseMemory <$> ps)
+       totdur = sum (phaseDuration <$> ps)
+
+   let showStats phases = do
+         let allphases = flattenPhases phases
+             groups    = groupOn phaseName (sortOn phaseName allphases)
+             gstat     = fmap (\group ->
+               let dur  = sum (fmap phaseDuration group)
+                   mem  = sum (fmap phaseMemory group)
+                   durp = dur / totdur * 100
+                   memp = mem / totmem * 100
+               in (phaseName (head group),dur,mem,durp,memp)) groups
+             gstat' = reverse $ sortOn (\(_,_,_,durp,memp) -> durp+memp) gstat
+         H.table (do
+            H.tr $ do
+               H.th (toHtml "Phase")
+               H.th (toHtml "Duration (%)")
+               H.th (toHtml "Memory (%)")
+               H.th (toHtml "Duration (ms)")
+               H.th (toHtml "Memory (MB)")
+            forM_ gstat' $ \(nam,dur,mem,durp,memp) -> H.tr $ do
+               H.td $ toHtml nam
+               H.td $ htmlPercent durp
+               H.td $ htmlPercent memp
+               H.td $ htmlFloat dur
+               H.td $ htmlFloat mem
+            H.tr (do
+               H.th $ toHtml "Total"
+               H.td $ toHtml "-"
+               H.td $ toHtml "-"
+               H.td $ htmlFloat totdur
+               H.td $ htmlFloat totmem
+               ) ! A.style (toValue "border-top: 1px gray solid")
+            ) ! A.class_ (toValue "phaseTable")
+
+   let showPerModule phases = do
+         let gstat = fmap (\phase ->
+               let dur  = phaseDuration phase
+                   mem  = phaseMemory phase
+                   durp = dur / totdur * 100
+                   memp = mem / totmem * 100
+               in (fromJust (phaseModule phase),dur,mem,durp,memp)) phases
+             gstat' = reverse $ sortOn (\(_,_,_,durp,memp) -> durp+memp) gstat
+         H.table (do
+            H.tr $ do
+               H.th (toHtml "Module")
+               H.th (toHtml "Duration (%)")
+               H.th (toHtml "Memory (%)")
+               H.th (toHtml "Duration (ms)")
+               H.th (toHtml "Memory (MB)")
+            forM_ gstat' $ \(md,dur,mem,durp,memp) -> H.tr $ do
+               H.td $ toHtml md
+               H.td $ htmlPercent durp
+               H.td $ htmlPercent memp
+               H.td $ htmlFloat dur
+               H.td $ htmlFloat mem
+            ) ! A.class_ (toValue "phaseTable")
+         
+   H.h2 (toHtml "Overall")
+   showStats ps
+   H.h2 (toHtml "Per module")
+   showPerModule (filter (isJust . phaseModule) ps)
 
 makePhaseInfos :: [Log] -> PhaseInfo
 makePhaseInfos = head . go [emptyPhaseInfo { phaseName = "" }]
@@ -883,7 +913,8 @@ makePhaseInfos = head . go [emptyPhaseInfo { phaseName = "" }]
             phase <- manyTill anyChar (string " [")
             md    <- manyTill anyChar (char ']')
             void (char ':')
-            return (phase, Just md)
+            let md' = if null md then Nothing else Just md
+            return (phase, md')
          ) <|> (do
             phase <- manyTill anyChar (char ':')
             return (phase, Nothing)
