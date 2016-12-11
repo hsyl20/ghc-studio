@@ -243,13 +243,14 @@ getSelectedProfile profs = do
 getSelectedProfileId :: Map Int CompilationProfile -> ServerPartT IO (Maybe Int)
 getSelectedProfileId profs = (fmap fst) <$> getSelectedProfile profs
 
-getCompilation :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Maybe (Int,CompState))
+getCompilation :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Maybe (Int,Compilation))
 getCompilation profs comps = do
    getSelectedProfile profs >>= \case
       Nothing    -> return Nothing
       Just (i,_) -> case Map.lookup i comps of
          Nothing -> return Nothing
-         Just c  -> return (Just (i,c))
+         Just Compiling    -> mempty
+         Just (Compiled c) -> return (Just (i,c))
 
 showBox :: String -> Html -> Html
 showBox title bdy = H.div (do
@@ -334,16 +335,14 @@ showPage files profs comps = do
       Just "source" -> showInputFile files
       Just p  -> getCompilation profs comps >>= \case
          Nothing    -> mempty
-         Just (ci,cstate) -> case cstate of
-            Compiling  -> mempty
-            Compiled c -> case p of
-               "config"        -> return $ showDynFlags (compilFlags c)
-               "overview"      -> return $ showOverview c
-               "core-overview" -> return (showCoreSizeEvolution ci c)
-               "all-phases"    -> return (showPhases ci c)
-               "phase"         -> showPhase ci c
-               "full-log"      -> showLogs files c
-               _               -> return (toHtml "TODO")
+         Just (ci,c) -> case p of
+            "config"        -> return $ showDynFlags (compilFlags c)
+            "overview"      -> return $ showOverview c
+            "core-overview" -> return (showCoreSizeEvolution ci c)
+            "all-phases"    -> return (showPhases ci c)
+            "phase"         -> showPhase ci c
+            "full-log"      -> showLogs files c
+            _               -> return (toHtml "TODO")
 
 showDefault :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
 showDefault _ _ _ = return $ do
@@ -366,22 +365,24 @@ showCompilingMaybe files profs comps = do
    case Map.lookup pid ps of
       Nothing   -> mempty
       Just prof -> do
-         needCompile <- liftIO $ atomically $ do
+         (needCompile,compilState) <- liftIO $ atomically $ do
             cs <- readTVar comps
-            if Map.notMember pid cs
-               then do
+            case Map.lookup pid cs of
+               -- not found: not compiled
+               Nothing -> do
                   modifyTVar comps (Map.insert pid Compiling)
-                  return True
-               else return False
+                  return (True,Compiling)
+               -- may be still compiling or already compiled
+               Just c  -> return (False,c)
          
-         if needCompile 
-            then do
-               liftIO $ void $ forkIO $ do
-                  comp <- compileFiles files prof
-                  atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
+         when needCompile $ do
+            liftIO $ void $ forkIO $ do
+               comp <- compileFiles files prof
+               atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
 
-               ok $ toResponse $ showCompiling
-            else mempty
+         case compilState of
+            Compiling  -> ok $ toResponse $ showCompiling
+            Compiled _ -> mempty
 
 
 showProfile :: CompilationProfile -> ServerPartT IO Html
