@@ -423,7 +423,8 @@ showPage files profs comps = do
             "core-overview" -> showCoreSizeEvolution profs comps
             "all-phases"    -> showPhases profs comps
             "phase"         -> (return (),) <$> showPhase ci c
-            "full-log"      -> (return (),) <$> showLogs files c
+            "full-log"      -> (return (),) <$> showLogs files profs comps
+            "ir"            -> showIRs files profs comps
             _               -> (return (),) <$> return (toHtml "TODO")
 
 showDefault :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
@@ -501,8 +502,29 @@ showInputFile files = do
             $ formatHtmlBlock defaultFormatOpts
             $ highlightAs "haskell" (fileContents file)
 
-showLogs :: [File] -> Compilation -> ServerPartT IO Html
-showLogs files comp = do
+showIRs :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
+showIRs _ profs comps = do
+   (_,comp) <- lookCompilation profs comps
+   md       <- optional $ look "module"
+
+   let phases' = phasePhaseChildren (compilPhases comp)
+       phases  = case md of
+         Nothing -> phases'
+         Just _  -> filter ((== md) . phaseModule) phases'
+
+       go phase = do
+         forM_ (phaseChildren phase) $ \case
+            PhaseDumpLog blk -> showBlock blk
+            PhaseChild p     -> go p
+            _                -> return ()
+
+   pageList <- showModuleFilter profs comps phases' "ir"
+   let page = forM_ phases go
+   return (pageList,page)
+
+showLogs :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showLogs files profs comps = do
+   (_,comp) <- lookCompilation profs comps
    fileFilter <- optional $ look "file"
    prof <- look "profile"
 
@@ -762,6 +784,27 @@ showPhase compIdx comp = do
                go (i+1) ps
       go (0 :: Int) (phaseChildren phase)
 
+
+showModuleFilter :: Map Int CompilationProfile -> Map Int CompState -> [PhaseInfo] -> String -> ServerPartT IO Html
+showModuleFilter profs comps phases page = do
+   (cid,_) <- lookCompilation profs comps
+   md <- optional $ look "module"
+
+   return $ showBox "Filter by module:" $ do
+      let mods = nub $ fmap fromJust (filter isJust (fmap phaseModule phases))
+      H.table $ do
+         H.tr $ H.td $ H.a (toHtml "All")
+            ! A.href (toValue $ "/?profile="++show cid++"&page="++page)
+            ! if not (isNothing md)
+               then mempty
+               else A.class_ (toValue "selectedItem")
+         forM_ mods $ \md' ->
+            H.tr $ H.td $ H.a (toHtml md')
+               ! A.href (toValue $ "/?profile="++show cid++"&page="++page++"&module="++md')
+               ! if Just md' /= md
+                  then mempty
+                  else A.class_ (toValue "selectedItem")
+
 showPhases :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
 showPhases profs comps = do
    (cid,comp) <- lookCompilation profs comps
@@ -789,20 +832,7 @@ showPhases profs comps = do
             H.td $ htmlFloat (phaseMemory s)
             go (phasePhaseChildren s)
 
-   let pageList = showBox "Filter by module:" $ do
-         let mods = nub $ fmap fromJust (filter isJust (fmap phaseModule phases'))
-         H.table $ do
-            H.tr $ H.td $ H.a (toHtml "All")
-               ! A.href (toValue $ "/?profile="++show cid++"&page=all-phases")
-               ! if not (isNothing md)
-                  then mempty
-                  else A.class_ (toValue "selectedItem")
-            forM_ mods $ \md' ->
-               H.tr $ H.td $ H.a (toHtml md')
-                  ! A.href (toValue $ "/?profile="++show cid++"&page=all-phases&module="++md')
-                  ! if Just md' /= md
-                     then mempty
-                     else A.class_ (toValue "selectedItem")
+   pageList <- showModuleFilter profs comps phases' "all-phases"
 
    let html = do
          H.table (do
@@ -856,20 +886,8 @@ showCoreSizeEvolution profs comps = do
                _ -> return ()
             go (phasePhaseChildren phase)
 
-   let pageList = showBox "Filter by module:" $ do
-         let mods = nub $ fmap fromJust (filter isJust (fmap phaseModule phases'))
-         H.table $ do
-            H.tr $ H.td $ H.a (toHtml "All")
-               ! A.href (toValue $ "/?profile="++show cid++"&page=core-overview")
-               ! if not (isNothing md)
-                  then mempty
-                  else A.class_ (toValue "selectedItem")
-            forM_ mods $ \md' ->
-               H.tr $ H.td $ H.a (toHtml md')
-                  ! A.href (toValue $ "/?profile="++show cid++"&page=core-overview&module="++md')
-                  ! if Just md' /= md
-                     then mempty
-                     else A.class_ (toValue "selectedItem")
+   pageList <- showModuleFilter profs comps phases' "core-overview"
+
    let html = do
          H.p (toHtml "These are the core-to-core passes that have been applied. The number of terms, types and coercions must stay reasonable.")
          H.table (do
@@ -1112,10 +1130,9 @@ makePhaseInfos ls = case runParser parseChildren "logs" ls of
 showBlock :: Block -> Html
 showBlock block = do
    H.h4 (toHtml (blockName block))
-   let dateStr = case blockDate block of
-         Nothing -> "No date"
-         Just x  -> show x
-   H.div (toHtml dateStr) ! A.class_ (toValue "date")
+   case blockDate block of
+         Nothing -> return ()
+         Just x  -> H.div (toHtml (show x)) ! A.class_ (toValue "date")
    H.div $ toHtml
       $ formatHtmlBlock defaultFormatOpts
       $ highlightAs (selectFormat (blockName block)) (blockContents block)
