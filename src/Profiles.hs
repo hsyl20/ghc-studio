@@ -88,6 +88,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_iterations
               `dopt_set` Opt_D_dump_simpl_stats
               `dopt_set` Opt_D_dump_simpl_trace
+              `dopt_set` Opt_D_verbose_core2core
       }
    , CompilationProfile
       { profileName  = "Debug simplifier - O1"
@@ -101,6 +102,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_iterations
               `dopt_set` Opt_D_dump_simpl_stats
               `dopt_set` Opt_D_dump_simpl_trace
+              `dopt_set` Opt_D_verbose_core2core
       }
    , CompilationProfile
       { profileName  = "Debug simplifier - O2"
@@ -114,6 +116,7 @@ defaultProfiles =
               `dopt_set` Opt_D_dump_simpl_iterations
               `dopt_set` Opt_D_dump_simpl_stats
               `dopt_set` Opt_D_dump_simpl_trace
+              `dopt_set` Opt_D_verbose_core2core
       }
    , CompilationProfile
       { profileName  = "Dump almost everything (no trace) - O0"
