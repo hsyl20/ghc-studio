@@ -42,6 +42,7 @@ executable ghc-web
       ,  stm                     >= 2.4
       ,  safe                    >= 0.3
       ,  extra                   >= 1.4
+      ,  deepseq                 >= 1.4
       ,  ghc
       ,  ghc-paths
   hs-source-dirs:      src

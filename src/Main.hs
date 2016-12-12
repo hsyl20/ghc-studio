@@ -47,23 +47,24 @@ import Numeric
 import Profiles
 import Text.Read (readEither)
 import Data.List.NonEmpty (NonEmpty(..))
+import Control.Exception (evaluate)
 
 
 data Compilation = Compilation
-   { compilFlags   :: DynFlags
-   , compilSources :: [File]
-   , compilLogs    :: [Log]
-   , compilPhases  :: PhaseInfo
+   { compilFlags   :: !DynFlags
+   , compilSources :: ![File]
+   , compilLogs    :: ![Log]
+   , compilPhases  :: !PhaseInfo
    }
 
 data Log = Log
-   { logId       :: Word
-   , logDynFlags :: DynFlags
-   , logReason   :: WarnReason
-   , logSeverity :: Severity
-   , logLocation :: Maybe Location
-   , logStyle    :: PprStyle
-   , logMessage  :: SDoc
+   { logId       :: !Word
+   , logDynFlags :: !DynFlags
+   , logReason   :: !WarnReason
+   , logSeverity :: !Severity
+   , logLocation :: !(Maybe Location)
+   , logStyle    :: !PprStyle
+   , logMessage  :: !SDoc
    }
 
 instance Eq Log where
@@ -78,11 +79,11 @@ instance Show Log where
             ++ "\n\tContents: "++ showLogMessage l
 
 data Location = Location
-   { locFile      :: String
-   , locStartLine :: Int
-   , locEndLine   :: Int
-   , locStartCol  :: Int
-   , locEndCol    :: Int
+   { locFile      :: !String
+   , locStartLine :: !Int
+   , locEndLine   :: !Int
+   , locStartCol  :: !Int
+   , locEndCol    :: !Int
    }
 
 type LogParser = Parsec Dec [Log]
@@ -97,10 +98,10 @@ instance MP.Stream [Log] where
 
 
 data PhaseCoreSize = PhaseCoreSize
-   { phaseCoreSizeName      :: String
-   , phaseCoreSizeTerms     :: Word
-   , phaseCoreSizeTypes     :: Word
-   , phaseCoreSizeCoercions :: Word
+   { phaseCoreSizeName      :: !String
+   , phaseCoreSizeTerms     :: !Word
+   , phaseCoreSizeTypes     :: !Word
+   , phaseCoreSizeCoercions :: !Word
    } deriving (Show)
 
 data PhaseChildType
@@ -111,12 +112,12 @@ data PhaseChildType
    deriving (Show)
 
 data PhaseInfo = PhaseInfo
-   { phaseName        :: String
-   , phaseModule      :: Maybe String
-   , phaseDuration    :: Float
-   , phaseMemory      :: Float
-   , phaseChildren    :: [PhaseChildType]
-   , phasePath        :: [Int]
+   { phaseName        :: !String
+   , phaseModule      :: !(Maybe String)
+   , phaseDuration    :: !Float
+   , phaseMemory      :: !Float
+   , phaseChildren    :: ![PhaseChildType]
+   , phasePath        :: ![Int]
    } deriving (Show)
 
 emptyPhaseInfo :: PhaseInfo
@@ -150,6 +151,7 @@ convertLocation = \case
 
 data CompState
    = Compiling
+   | Parsing
    | Compiled Compilation
 
 main :: IO ()
@@ -204,7 +206,7 @@ data File = File
    } deriving (Show)
 
 
-compileFiles :: [File] -> CompilationProfile -> IO Compilation
+compileFiles :: [File] -> CompilationProfile -> IO ([Log],DynFlags)
 compileFiles files prof = do
    logs <- newIORef []
    cnt  <- newIORef 0
@@ -240,10 +242,8 @@ compileFiles files prof = do
             return dflags'
 
    logs' <- reverse <$> readIORef logs
+   return (logs',dflgs)
 
-   let phaseInfos = makePhaseInfos logs'
-
-   return (phaseInfos `seq` Compilation dflgs files logs' phaseInfos)
 
 
 
@@ -323,9 +323,10 @@ getCompilation profs comps = do
    getSelectedProfile profs >>= \case
       Nothing    -> return Nothing
       Just (i,_) -> case Map.lookup i comps of
-         Nothing -> return Nothing
-         Just Compiling    -> mempty
+         Nothing           -> return Nothing
          Just (Compiled c) -> return (Just (i,c))
+         Just Compiling    -> mempty
+         Just Parsing      -> mempty
 
 lookCompilation :: Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Int,Compilation)
 lookCompilation profs comps = getCompilation profs comps >>= \case
@@ -458,12 +459,15 @@ showCompilingMaybe files profs comps = do
          
          when needCompile $ do
             liftIO $ void $ forkIO $ do
-               comp <- compileFiles files prof
+               (logs,dflags) <- compileFiles files prof
+               atomically $ modifyTVar comps (Map.insert pid Parsing)
+               phaseInfos <- evaluate $ makePhaseInfos logs
+               let comp = Compilation dflags files logs phaseInfos
                atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
 
          case compilState of
-            Compiling  -> ok $ toResponse $ showCompiling
             Compiled _ -> mempty
+            cstate     -> ok $ toResponse $ showCompiling cstate
 
 
 showProfile :: CompilationProfile -> ServerPartT IO Html
@@ -472,14 +476,18 @@ showProfile prof = return $ do
    H.p $ toHtml (profileDesc prof)
 
 -- | Template of all pages
-showCompiling :: Html
-showCompiling = docTypeHtml $ do
+showCompiling :: CompState -> Html
+showCompiling cstate = docTypeHtml $ do
    showHead $ 
       H.meta ! A.httpEquiv (toValue "refresh")
              ! A.content   (toValue "2")
    showBody $ do
-      H.div (toHtml "Compiling...")
-         ! A.class_ (toValue "compiling")
+      H.div (do
+         toHtml "Compiling..."
+         case cstate of
+            Parsing -> H.br >> toHtml "Parsing logs..."
+            _       -> return ()
+         ) ! A.class_ (toValue "compiling")
 
 showInputFile :: [File] -> ServerPartT IO Html
 showInputFile files = do
@@ -765,14 +773,13 @@ showPhases profs comps = do
          Just _  -> filter ((== md) . phaseModule) phases'
        totdur  = sum (phaseDuration <$> phases')
        totmem  = sum (phaseMemory <$> phases')
-       go ps parents = do
-         let
-             ind = concat (replicate (4*length parents) "&nbsp;") ++ " * "
-             nm p = H.preEscapedToHtml ind >> toHtml (phaseName p)
-         forM_ (ps `zip` [0..]) $ \(s,(idx :: Int)) -> H.tr $ do
+       go ps = do
+         forM_ ps $ \s -> H.tr $ do
+            let ind = concat (replicate (4*length (phasePath s)) "&nbsp;") ++ " * "
+                nm  = H.preEscapedToHtml ind >> toHtml (phaseName s)
             case phaseChildren s of
-               [] -> H.td (nm s) ! A.style (toValue "text-align:left")
-               _  -> H.td (H.a (nm s)
+               [] -> H.td nm ! A.style (toValue "text-align:left")
+               _  -> H.td (H.a nm
                   ! A.href (toValue ("/?profile="++show cid ++"&page=phase&phase="++show (phasePath s)))
                   ) ! A.style (toValue "text-align:left")
             H.td $ toHtml (fromMaybe "-" (phaseModule s))
@@ -780,7 +787,7 @@ showPhases profs comps = do
             H.td $ htmlPercent (phaseMemory s / totmem * 100)
             H.td $ htmlFloat (phaseDuration s)
             H.td $ htmlFloat (phaseMemory s)
-            go (phasePhaseChildren s) (idx:parents)
+            go (phasePhaseChildren s)
 
    let pageList = showBox "Filter by module:" $ do
          let mods = nub $ fmap fromJust (filter isJust (fmap phaseModule phases'))
@@ -806,7 +813,7 @@ showPhases profs comps = do
                H.th (toHtml "Memory (%)")
                H.th (toHtml "Duration (ms)")
                H.th (toHtml "Memory (MB)")
-            go phases []
+            go phases
             H.tr (do
                H.th $ toHtml "Total"
                H.td $ toHtml "-"
@@ -981,14 +988,14 @@ makePhaseInfos ls = case runParser parseChildren "logs" ls of
             prepgo n (x@(PhaseChild _):xs) = prependPath n x : prepgo (n+1) xs
             prepgo n (x:xs)                = x : prepgo n xs
             children'' = prepgo 0 children'
-         return children''
+         return $! children''
       
       parsePhase :: LogParser PhaseInfo
       parsePhase = do
          (name,md) <- toLogParser parseBegin
          children  <- parseChildren
          (dur,mem) <- toLogParser parseEnd
-         return $ PhaseInfo name md dur mem children []
+         return $! PhaseInfo name md dur mem children []
 
       wrap x = [x]
 
