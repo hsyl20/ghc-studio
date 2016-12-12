@@ -22,6 +22,6 @@ Currently we need a patched GHC version:
 We need to create to make sure that cabal uses the patched GHC:
 > cabal configure -w /path/to/ghc/inplace/bin/ghc-stage2
 > cabal install --only-dependencies
-> cabal install
+> cabal build
 > ./dist/build/ghc-studio/ghc-studio Main.hs A.hs Test/B.hs -p 9000
 Starting Web server at localhost:9000
