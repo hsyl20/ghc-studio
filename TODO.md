@@ -1,3 +1,4 @@
+* Use Text instead of String
 * Add warmup for GHC
 * Fix trace generation: merge them in a single "dump"
 * Asm: don't dump liveness/registers/synthetic instructions for data (e.g.,
@@ -17,3 +18,16 @@
 * Asm analysis (à la Maqao)
 * Integrate perf counters
 * Integrate ptrace
+* Interactive mode:
+   * allow GHC pause/stop
+   * filter logs on the fly until something is found (breakpoint)
+   * start dumping logs at a given phase
+* Automatic analysis
+   * e.g., detect spikes in core size
+* Support log interruption (phase closed with eof during parsing)
+
+* Replace some text messages with an ADT to avoid parsing
+   * E.g., phase stop could be: PhaseStop Float Float
+
+* Improve "Compiling..." page
+   * e.g.., Show the current module/phase/etc.
