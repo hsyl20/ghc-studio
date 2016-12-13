@@ -394,6 +394,7 @@ showCompilePageList profs comps = do
          uriCoreOverview <- makeItem "Core phases overview" "core-overview"
          uriAllPhases    <- makeItem "All phases" "all-phases"
          uriIR           <- makeItem "Intermediate representations" "ir"
+         uriRemLog       <- makeItem "Unparsed log" "rem-log"
          uriFullLog      <- makeItem "Full log" "full-log"
       
          return $ showBox "Run infos" $ H.table $ do
@@ -402,6 +403,7 @@ showCompilePageList profs comps = do
             H.tr $ H.td $ uriCoreOverview
             H.tr $ H.td $ uriAllPhases
             H.tr $ H.td $ uriIR
+            H.tr $ H.td $ uriRemLog
             H.tr $ H.td $ uriFullLog
 
 showPage :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
@@ -423,7 +425,8 @@ showPage files profs comps = do
             "core-overview" -> showCoreSizeEvolution profs comps
             "all-phases"    -> showPhases profs comps
             "phase"         -> (return (),) <$> showPhase ci c
-            "full-log"      -> (return (),) <$> showLogs files profs comps
+            "full-log"      -> showLogs files profs comps
+            "rem-log"       -> showRemLogs files profs comps
             "ir"            -> showIRs files profs comps
             _               -> (return (),) <$> return (toHtml "TODO")
 
@@ -522,70 +525,84 @@ showIRs _ profs comps = do
    let page = forM_ phases go
    return (pageList,page)
 
-showLogs :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO Html
+showLogs :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
 showLogs files profs comps = do
-   (_,comp) <- lookCompilation profs comps
+   (cid,comp) <- lookCompilation profs comps
    fileFilter <- optional $ look "file"
-   prof <- look "profile"
 
-   let filterHtml = do
-         toHtml "Restrict to file:"
-         H.ul $ do
-            H.li $ H.a (toHtml "All")
-               ! A.href (toValue ("/?profile="++prof++"&page=full-log"))
+   let filterHtml = showBox "Filter by file:" $ do
+         H.table $ do
+            H.tr $ H.td $ H.a (toHtml "All")
+               ! A.href (toValue ("/?profile="++show cid++"&page=full-log"))
                ! if fileFilter /= Nothing
                   then mempty
                   else A.class_ (toValue "selectedItem")
             forM_ files $ \file -> do
-               H.li $ H.a (toHtml (fileName file))
-                  ! A.href (toValue ("/?profile="++prof++"&page=full-log&file="++fileName file))
+               H.tr $ H.td $ H.a (toHtml (fileName file))
+                  ! A.href (toValue ("/?profile="++show cid++"&page=full-log&file="++fileName file))
                   ! if fileFilter /= Just (fileName file)
                      then mempty
                      else A.class_ (toValue "selectedItem")
 
-   return $ do
-      filterHtml
-      let
-         logFilter clog = case (fileFilter,logLocation clog) of
-            (Nothing,_)      -> True
-            (Just f, Just s) -> locFile s == f
-            _                -> False
-         logs = filter logFilter (compilLogs comp)
+   let page = do
+         let
+            logFilter clog = case (fileFilter,logLocation clog) of
+               (Nothing,_)      -> True
+               (Just f, Just s) -> locFile s == f
+               _                -> False
+            logs = filter logFilter (compilLogs comp)
 
-      case fileFilter of
-         Nothing -> showLogTable logs
-         Just f  -> do
-            let
-               pos = locEndLine . fromJust . logLocation
-               ers = sortOn fst
-                        $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
-                        $ groupOn pos
-                        $ sortOn pos
-                        $ filter (isJust . logLocation) logs
+         case fileFilter of
+            Nothing -> showLogTable logs
+            Just f  -> do
+               let
+                  pos = locEndLine . fromJust . logLocation
+                  ers = sortOn fst
+                           $ fmap (\x -> (locEndLine $ fromJust $ logLocation $ head x,x))
+                           $ groupOn pos
+                           $ sortOn pos
+                           $ filter (isJust . logLocation) logs
 
-               file   = head (filter ((== f) . fileName) (compilSources comp))
-               source = highlightAs "haskell" (fileContents file)
+                  file   = head (filter ((== f) . fileName) (compilSources comp))
+                  source = highlightAs "haskell" (fileContents file)
 
-               go _           []  []               = return ()
-               go currentLine src []               = do
-                  let opts = defaultFormatOpts
-                        { numberLines = True
-                        , startNumber = currentLine+1
-                        }
-                  formatHtmlBlock opts src
-               go currentLine src ((n,errs):errors)
-                  | n == currentLine = showLogTable errs >> go (currentLine+1) src errors
-                  | otherwise        = do
-                     let (src1,src2) = splitAt (n - currentLine) src
+                  go _           []  []               = return ()
+                  go currentLine src []               = do
                      let opts = defaultFormatOpts
                            { numberLines = True
                            , startNumber = currentLine+1
                            }
-                     formatHtmlBlock opts src1
-                     showLogTable errs
-                     go n src2 errors
+                     formatHtmlBlock opts src
+                  go currentLine src ((n,errs):errors)
+                     | n == currentLine = showLogTable errs >> go (currentLine+1) src errors
+                     | otherwise        = do
+                        let (src1,src2) = splitAt (n - currentLine) src
+                        let opts = defaultFormatOpts
+                              { numberLines = True
+                              , startNumber = currentLine+1
+                              }
+                        formatHtmlBlock opts src1
+                        showLogTable errs
+                        go n src2 errors
 
-            H.div $ toHtml $ go 0 source ers
+               H.div $ toHtml $ go 0 source ers
+
+   return (filterHtml,page)
+
+showRemLogs :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
+showRemLogs _ profs comps = do
+   (_,comp) <- lookCompilation profs comps
+
+   let 
+      f (PhaseRawLog ls) = ls
+      f (PhaseChild c)   = go (phaseChildren c)
+      f _                = []
+
+      go ps = concatMap f ps
+      logs  = go (phaseChildren (compilPhases comp))
+      page  = showLogTable logs
+
+   return (return (),page)
 
 showLogSeverity :: Log -> String
 showLogSeverity l = case logSeverity l of
@@ -593,6 +610,7 @@ showLogSeverity l = case logSeverity l of
    SevFatal       -> "Fatal"
    SevInteractive -> "Interactive"
    SevDump        -> "Dump"
+   SevTrace       -> "Trace"
    SevInfo        -> "Info"
    SevWarning     -> "Warning"
    SevError       -> "Error"
@@ -818,7 +836,7 @@ showPhases profs comps = do
        totmem  = sum (phaseMemory <$> phases')
        go ps = do
          forM_ ps $ \s -> H.tr $ do
-            let ind = concat (replicate (4*length (phasePath s)) "&nbsp;") ++ " * "
+            let ind = concat (replicate (4*(length (phasePath s)-1)) "&nbsp;") ++ " * "
                 nm  = H.preEscapedToHtml ind >> toHtml (phaseName s)
             case phaseChildren s of
                [] -> H.td nm ! A.style (toValue "text-align:left")
@@ -1095,7 +1113,7 @@ makePhaseInfos ls = case runParser parseChildren "logs" ls of
          let contents = showLogMessage l
          return $ case runParser blocks "" contents of
             Right x -> x
-            Left e  -> [Block "Whole file" Nothing
+            Left e  -> [Block "Bogus dump" Nothing
                         (contents ++ "\n\n==== Parse error ====\n" ++ show e)]
       blockMark = do
          void eol
@@ -1123,7 +1141,7 @@ makePhaseInfos ls = case runParser parseChildren "logs" ls of
          return (Block name date bcontents)
       
       blocks :: Parser [Block]
-      blocks = many block
+      blocks = many block <* eof
 
 
 
