@@ -31,3 +31,19 @@
 
 * Improve "Compiling..." page
    * e.g.., Show the current module/phase/etc.
+
+# TODO in GHC
+
+* Convert static flags into dynamic flags
+   So that we can use them with GHC API
+* Clearly separate GHC program and GHC API
+   * E.g. separate command-line flags and compiler options/state (currently DynFlags)
+   * Add hooks so that dump IO is performed by the program, not the API
+   * Make "verbosity" a program option only, not an API option
+* Enhance GHC log generation
+   * Typed logs (ADT for logs)
+* Make GHC purer
+   * better separation between pure and IO code
+* Integrated tracing mechanism
+* Customizable Finder (à la Java's Class loader)
+   * load from in-memory sources
