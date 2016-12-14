@@ -14,7 +14,7 @@ data CompilationProfile = CompilationProfile
 defaultProfiles :: [CompilationProfile]
 defaultProfiles =
    [ CompilationProfile
-      { profileName  = "Show passes - O0"
+      { profileName  = "Timings - O0"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -24,7 +24,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Show passes - O1"
+      { profileName  = "Timings - O1"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -34,7 +34,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Show passes - O2"
+      { profileName  = "Timings - O2"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -44,7 +44,7 @@ defaultProfiles =
             }
       }
    , CompilationProfile
-      { profileName  = "Show passes - O2 LLVM"
+      { profileName  = "Timings - O2 LLVM"
       , profileDesc  = "Use this pass to detect the most expensive phases"
       , profileFlags = \dflags ->
          enableWarningGroup "all"
@@ -97,6 +97,18 @@ defaultProfiles =
             { verbosity = 2
             } `dopt_set` Opt_D_dump_tc
               `dopt_set` Opt_D_dump_tc_trace
+      }
+   , CompilationProfile
+      { profileName  = "Debug type-checker - O2 DEBUG"
+      , profileDesc  = "Use this pass for type-checker debugging"
+      , profileFlags = \dflags ->
+         enableWarningGroup "all"
+         $ updOptLevel 2
+         $ dflags
+            { verbosity = 2
+            } `dopt_set` Opt_D_dump_tc
+              `dopt_set` Opt_D_dump_tc_trace
+              `dopt_set` Opt_D_ppr_debug
       }
    , CompilationProfile
       { profileName  = "Debug simplifier - O0"
