@@ -20,14 +20,14 @@ executable ghc-studio
 
   other-extensions:    LambdaCase, TemplateHaskell
   build-depends:
-         base                    >=4.9 && <4.10
-      ,  network                 >=2.6 && <2.7
-      ,  file-embed              >=0.0 && <0.1
-      ,  containers              >=0.5 && <0.6
-      ,  vector                  >=0.11 && <0.12
-      ,  blaze-html              >=0.8 && <0.9
-      ,  bytestring              >=0.10 && <0.11
-      ,  optparse-applicative    >=0.12 && <0.14
+         base                    >=4.9
+      ,  network                 >=2.6
+      ,  file-embed              >=0.0
+      ,  containers              >=0.5
+      ,  vector                  >=0.11
+      ,  blaze-html              >=0.8
+      ,  bytestring              >=0.10
+      ,  optparse-applicative    >=0.12
       ,  happstack-server        >= 7.4
       ,  megaparsec              >= 5.0
       ,  HTTP                    >= 4000
