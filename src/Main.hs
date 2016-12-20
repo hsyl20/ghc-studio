@@ -45,6 +45,7 @@ import Safe
 import Extra
 import Numeric
 import Profiles
+import Report
 import Text.Read (readEither)
 import Data.List.NonEmpty (NonEmpty(..))
 import Control.Exception (evaluate)
@@ -55,6 +56,7 @@ data Compilation = Compilation
    , compilSources :: ![File]
    , compilLogs    :: ![Log]
    , compilPhases  :: !PhaseInfo
+   , compilReports :: ![Report]
    }
 
 data Log = Log
@@ -206,9 +208,10 @@ data File = File
    } deriving (Show)
 
 
-compileFiles :: [File] -> CompilationProfile -> IO ([Log],DynFlags)
+compileFiles :: [File] -> CompilationProfile -> IO ([Log],[Report],DynFlags)
 compileFiles files prof = do
    logs <- newIORef []
+   reports <- newIORef []
    cnt  <- newIORef 0
 
    dflgs <- withSystemTempDirectory "ghc-web" $ \tmpdir -> do
@@ -230,9 +233,13 @@ compileFiles files prof = do
                   modifyIORef' cnt (+1) 
                   --log_action dflags dfl reason sev srcspan style msg
 
+            let pubReport _ report = modifyIORef' reports (report :)
+                     -- publishReport dflags dflags report
+
             let dflags' = (profileFlags prof dflags)
-                  { dumpDir    = Just tmpdir
-                  , log_action = logact
+                  { dumpDir       = Just tmpdir
+                  , log_action    = logact
+                  , publishReport = pubReport
                   }
             void $ setSessionDynFlags dflags'
             target <- guessTarget (fileName (head files)) Nothing
@@ -241,8 +248,9 @@ compileFiles files prof = do
 
             return dflags'
 
-   logs' <- reverse <$> readIORef logs
-   return (logs',dflgs)
+   logs'    <- reverse <$> readIORef logs
+   reports' <- reverse <$> readIORef reports
+   return (logs',reports',dflgs)
 
 
 
@@ -396,6 +404,7 @@ showCompilePageList profs comps = do
          uriIR           <- makeItem "Intermediate representations" "ir"
          uriRemLog       <- makeItem "Unparsed log" "rem-log"
          uriFullLog      <- makeItem "Full log" "full-log"
+         uriReports      <- makeItem "Reports" "reports"
       
          return $ showBox "Run infos" $ H.table $ do
             H.tr $ H.td $ uriConf
@@ -405,6 +414,7 @@ showCompilePageList profs comps = do
             H.tr $ H.td $ uriIR
             H.tr $ H.td $ uriRemLog
             H.tr $ H.td $ uriFullLog
+            H.tr $ H.td $ uriReports
 
 showPage :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
 showPage files profs comps = do
@@ -426,6 +436,7 @@ showPage files profs comps = do
             "all-phases"    -> showPhases profs comps
             "phase"         -> (return (),) <$> showPhase ci c
             "full-log"      -> showLogs files profs comps
+            "reports"       -> showReports files profs comps
             "rem-log"       -> showRemLogs files profs comps
             "ir"            -> showIRs files profs comps
             _               -> (return (),) <$> return (toHtml "TODO")
@@ -463,10 +474,10 @@ showCompilingMaybe files profs comps = do
          
          when needCompile $ do
             liftIO $ void $ forkIO $ do
-               (logs,dflags) <- compileFiles files prof
+               (logs,reports,dflags) <- compileFiles files prof
                atomically $ modifyTVar comps (Map.insert pid Parsing)
                phaseInfos <- evaluate $ makePhaseInfos logs
-               let comp = Compilation dflags files logs phaseInfos
+               let comp = Compilation dflags files logs phaseInfos reports
                atomically $ modifyTVar comps (Map.insert pid (Compiled comp))
 
          case compilState of
@@ -586,6 +597,23 @@ showLogs files profs comps = do
                         go n src2 errors
 
                H.div $ toHtml $ go 0 source ers
+
+   return (filterHtml,page)
+
+showReports :: [File] -> Map Int CompilationProfile -> Map Int CompState -> ServerPartT IO (Html,Html)
+showReports _files profs comps = do
+   (_,comp) <- lookCompilation profs comps
+
+   let filterHtml = mempty
+
+   let page = do
+         H.table $ do
+            H.tr $ do
+               H.th (toHtml "Module name")
+            forM_ (compilReports comp) $ \report -> H.tr $ do
+               case report of
+                  ReportCore cr -> do
+                     H.td $ toHtml $ moduleNameString (moduleName (coreReportModule cr))
 
    return (filterHtml,page)
 
