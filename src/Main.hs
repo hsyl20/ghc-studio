@@ -46,6 +46,7 @@ import Extra
 import Numeric
 import Profiles
 import Report
+import PprCore
 import Text.Read (readEither)
 import Data.List.NonEmpty (NonEmpty(..))
 import Control.Exception (evaluate)
@@ -607,13 +608,22 @@ showReports _files profs comps = do
    let filterHtml = mempty
 
    let page = do
-         H.table $ do
-            H.tr $ do
-               H.th (toHtml "Module name")
-            forM_ (compilReports comp) $ \report -> H.tr $ do
-               case report of
-                  ReportCore cr -> do
-                     H.td $ toHtml $ moduleNameString (moduleName (coreReportModule cr))
+         forM_ (compilReports comp) $ \(ReportCore cr) -> do
+            H.table $ do
+               H.tr $ do
+                  H.th (toHtml "Module name")
+                  H.td $ toHtml $ moduleNameString (moduleName (coreReportModule cr))
+               H.tr $ do
+                  H.th (toHtml "Pass")
+                  H.td $ toHtml $ showSDoc (compilFlags comp) (ppr (coreReportPass cr))
+               H.tr $ do
+                  H.th (toHtml "Statistics")
+                  H.td $ toHtml $ showSDoc (compilFlags comp) (ppr (coreReportStats cr))
+               -- show rules and counts
+            H.div $ do
+               let code = pprCoreBindingsWithSize (coreReportProgram cr)
+               formatHtmlBlock defaultFormatOpts
+                  $ highlightAs "haskell" (showSDoc (compilFlags comp) code)
 
    return (filterHtml,page)
 
