@@ -1,7 +1,7 @@
-name:                ghc-studio
+name:                haskus-studio
 version:             0.1.0.0
 -- synopsis:            
--- description:         
+description:         Haskus Haskell IDE
 license:             BSD3
 license-file:        LICENSE
 author:              Sylvain Henry
