@@ -24,7 +24,6 @@ import qualified Data.Set as Set
 import Data.Map (Map)
 
 import Text.Highlighting.Kate
-import Text.Megaparsec.String (Parser)
 import Text.Megaparsec as MP
 import Text.Blaze.Html5 ((!), toHtml, docTypeHtml, Html, toValue)
 import qualified Text.Blaze.Html5.Attributes as A
@@ -45,19 +44,19 @@ import Safe
 import Extra
 import Numeric
 import Profiles
-import Report
 import PprCore
 import Text.Read (readEither)
 import Data.List.NonEmpty (NonEmpty(..))
 import Control.Exception (evaluate)
 
+type Parser = Parsec Void String
 
 data Compilation = Compilation
    { compilFlags   :: !DynFlags
    , compilSources :: ![File]
    , compilLogs    :: ![Log]
    , compilPhases  :: !PhaseInfo
-   , compilReports :: ![Report]
+   -- , compilReports :: ![Report]
    }
 
 data Log = Log

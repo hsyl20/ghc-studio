@@ -1,3 +1,6 @@
+* Apply patches on top of GHC-8.6.4 branch
+
+
 * Use Text instead of String
 * Add warmup for GHC
 * Fix trace generation: merge them in a single "dump"

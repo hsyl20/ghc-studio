@@ -9,14 +9,14 @@ maintainer:          sylvain@haskus.fr
 -- copyright:           
 category:            Development
 build-type:          Simple
-extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
-executable ghc-studio
+executable haskus-studio
   main-is:             Main.hs
   other-modules:
          CmdLine
       ,  Profiles
+      ,  Pipeline
 
   other-extensions:    LambdaCase, TemplateHaskell
   build-depends:
@@ -42,6 +42,7 @@ executable ghc-studio
       ,  deepseq                 >= 1.4
       ,  ghc
       ,  ghc-paths
+      ,  haskus-web
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options: -Wall -O2
